@@ -11,9 +11,16 @@ dependencies:
   - scikit-learn
   - matplotlib
   - jupyterlab
-  # ML / transformers stack (installed via pip to track latest wheels)
+  # PyTorch comes from conda-forge, not pip, so the env holds exactly one OpenMP
+  # runtime. The pip wheel bundles its own libomp.dylib alongside the env's copy,
+  # and importing torch then aborts the process with "OMP: Error #15" (SIGABRT)
+  # rather than raising, which takes down anything that imports it, pytest
+  # included. The conda-forge build symlinks torch/lib/libomp.dylib to the env's
+  # libomp instead, so there is nothing to clash. MPS is enabled in this build,
+  # which the local Apple-Silicon path depends on.
+  - pytorch>=2.13
+  # Remaining ML / transformers stack via pip, to track the latest wheels.
   - pip:
-      - torch
       - transformers
       - datasets
       - accelerate

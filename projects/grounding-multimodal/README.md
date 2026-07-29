@@ -1,4 +1,4 @@
-# grounding-multimodal (Project 2, flagship)
+# grounding-multimodal (Project 1, flagship)
 
 Does grounding a protein-sequence representation in text (functional annotations) measurably improve a downstream task over sequence-only, and does the gain survive controls that rule out label leakage? A protein-domain take on the broader "does language grounding help" question.
 

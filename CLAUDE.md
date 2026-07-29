@@ -3,11 +3,12 @@
 Read `PLANNING.md` first; it is the source of truth for scope and sequencing.
 
 ## What this repo is
-Three small, openly-released transformer-and-biology experiments (see `PLANNING.md`). Build order: `grounding-multimodal` first, then `dms-benchmark`, then `tcr-antibody-lm`. They share the `biotp` package in `src/`.
+Three small, openly-released transformer-and-biology experiments (see `PLANNING.md`). Build order matches the project numbering: `grounding-multimodal` (Project 1) first, then `dms-benchmark` (Project 2), then `tcr-antibody-lm` (Project 3). They share the `biotp` package in `src/`.
 
 ## Environment
 - Use **mamba**, not venv. The env is named **`biollm`**.
 - Create/update from `environment.yml`: `mamba env create -f environment.yml` (or `mamba env update -f environment.yml`), then `mamba activate biollm`, then `pip install -e .`.
+- PyTorch comes from **conda-forge** via `environment.yml`; never `pip install torch`. The pip wheel bundles a second OpenMP runtime, and importing torch then aborts the process with `OMP: Error #15` instead of raising. `tests/test_environment.py` guards this.
 - Device: `biotp.utils.get_device()` returns cuda, then mps, then cpu. Locally set `PYTORCH_ENABLE_MPS_FALLBACK=1`.
 - SLURM: submit `slurm/*.sbatch` for GPU-heavy one-offs while cluster access lasts; use the same `biollm` env on the cluster. Default partition `campus-new`; `chorus` for L40S.
 

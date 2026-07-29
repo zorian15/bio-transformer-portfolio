@@ -12,8 +12,20 @@ dependencies = []  # runtime deps are managed via environment.yml (mamba env 'bi
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+biotp = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+# Strict xfail: a scaffold stub's contract tests fail loudly once it starts
+# working, which is the signal to drop the marker rather than leave the test
+# permanently and silently skipped.
+xfail_strict = true
+
 [tool.black]
 line-length = 88
+target-version = ["py311"]
 
 [tool.ruff]
 line-length = 88

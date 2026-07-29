@@ -1,4 +1,4 @@
-# dms-benchmark (Project 1)
+# dms-benchmark (Project 2)
 
 When does a fine-tuned protein language model beat a simple structured/biophysical baseline on deep mutational scanning fitness, and how does the answer change with the amount of labeled data? Tests the priors-vs-scale thesis empirically. Reuses the sequence pipeline built in `grounding-multimodal`.
 

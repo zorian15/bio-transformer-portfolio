@@ -4,11 +4,11 @@ Datasets live here and are gitignored (only this README is tracked). Keep raw do
 
 ## Where to fetch each project's data
 
-**grounding-multimodal (Project 2)**
+**grounding-multimodal (Project 1)**
 - Swiss-Prot / UniProt sequences plus function annotations (function text, GO terms, keywords): uniprot.org (bulk download or the REST API).
 - A clean downstream benchmark, e.g. DeepLoc for subcellular localization.
 
-**dms-benchmark (Project 1)**
+**dms-benchmark (Project 2)**
 - ProteinGym: the public deep mutational scanning benchmark (substitutions and indels), from the ProteinGym release.
 - Optionally, one of your own viral DMS datasets for a domain-flavored variant.
 

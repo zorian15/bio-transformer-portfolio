@@ -4,7 +4,7 @@ This is the source-of-truth plan for this repo. Each project lives under `projec
 
 Goal: build practical, openly-released transformer experiments at the intersection of machine learning and biology, drawing on a background in viral-protein and adaptive-immunity modeling. Each project ends in a public repo, model weights, and a short writeup, with an emphasis on careful, leakage-aware evaluation and reproducibility.
 
-Order: **Project 2 first**, then Project 1, then Project 3. Rationale: Project 2's honest baseline is the sequence-only protein-LM pipeline, which is the core of Project 1, so #2 delivers most of #1 as a byproduct. #3 reuses the same fine-tuning and evaluation harness on immune data.
+Order: **build in numbered order**, Project 1, then Project 2, then Project 3. The numbers are assigned to match the build order, so "Project 1" always means "the one to do first." Rationale for that order: Project 1's honest baseline is the sequence-only protein-LM pipeline, which is also the core of Project 2, so Project 1 delivers most of Project 2 as a byproduct. Project 3 then reuses the same fine-tuning and evaluation harness on immune data.
 
 Guiding principle: MVP first. Get an end-to-end result with frozen embeddings and a small head before adding fine-tuning, fusion, or scale. Ramp complexity only after something runs end to end.
 
@@ -37,7 +37,7 @@ Lives in `src/biotp/`.
 
 ---
 
-## Project 2 (flagship, first): Does language grounding help protein representations?
+## Project 1 (flagship, first): Does language grounding help protein representations?
 Lives in `projects/grounding-multimodal/`. Takes up a live question in the field, whether grounding a representation in biological language beats molecular-data-only, and asks it in the protein domain.
 
 - **Question:** Does adding text (functional annotations) to a protein-sequence representation measurably improve a downstream task over sequence-only, and does the gain survive controls that rule out label leakage?
@@ -45,14 +45,14 @@ Lives in `projects/grounding-multimodal/`. Takes up a live question in the field
 - **Model (MVP then extend):**
   - MVP: frozen ESM-2 sequence embedding + frozen text embedding (a small sentence encoder) concatenated into a small MLP head.
   - Extend: CLIP-style contrastive alignment between sequence and text; light fine-tuning of one encoder.
-- **Baselines:** sequence-only (= Project 1's core pipeline), text-only, and a shuffled/random-text control.
+- **Baselines:** sequence-only (= Project 2's core pipeline), text-only, and a shuffled/random-text control.
 - **Eval:** held-out proteins/families; the key result is sequence+text vs sequence-only. Run the shuffled-text and text-only controls to prove any gain is real grounding, not annotation leaking the label. This ablation rigor is the scientifically credible core of the result.
 - **Deliverable:** repo + weights + a writeup whose headline is the honest answer (including "it did not help, and here is why," which is a legitimate and interesting result).
 - **Skills exercised:** using transformer encoders, multimodal fusion, contrastive learning, controlled evaluation.
 - **Main risk:** text leakage (annotations encode the label). Turn it into the analysis's spine via controls rather than hiding it.
 
-## Project 1 (second): Protein-LM fine-tune vs structured baseline on DMS fitness
-Lives in `projects/dms-benchmark/`. Extends Project 2's sequence pipeline into a benchmark that tests the priors-versus-scale question empirically.
+## Project 2 (second): Protein-LM fine-tune vs structured baseline on DMS fitness
+Lives in `projects/dms-benchmark/`. Extends Project 1's sequence pipeline into a benchmark that tests the priors-versus-scale question empirically.
 
 - **Question:** When does a fine-tuned protein LM beat a simple structured/biophysical baseline on deep mutational scanning fitness, and how does the answer change with the amount of labeled data?
 - **Data:** ProteinGym (public DMS benchmark) and/or an in-house viral DMS dataset.
@@ -74,9 +74,9 @@ Lives in `projects/tcr-antibody-lm/`. Points the same machinery at adaptive-immu
 ---
 
 ## Sequencing and rough effort
-1. Shared infra + Project 2 MVP (frozen embeddings, sequence-only vs sequence+text): the biggest single step, since it stands up the whole stack. Get a number end to end before adding contrastive/fine-tuning.
-2. Project 2 full (controls, contrastive, writeup, release).
-3. Project 1: reuse the sequence pipeline, add zero-shot + LoRA + the data-efficiency curve. Smaller increment.
+1. Shared infra + Project 1 MVP (frozen embeddings, sequence-only vs sequence+text): the biggest single step, since it stands up the whole stack. Get a number end to end before adding contrastive/fine-tuning.
+2. Project 1 full (controls, contrastive, writeup, release).
+3. Project 2: reuse the sequence pipeline, add zero-shot + LoRA + the data-efficiency curve. Smaller increment.
 4. Project 3: swap in immune data, add leakage-aware epitope split. Domain reuse.
 
 ## Open-science release checklist (per project)

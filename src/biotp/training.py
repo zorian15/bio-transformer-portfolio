@@ -11,7 +11,9 @@ from typing import Literal
 FinetuneMode = Literal["linear_probe", "lora", "full"]
 
 
-def build_head(input_dim: int, output_dim: int, task: Literal["regression", "classification"]):
+def build_head(
+    input_dim: int, output_dim: int, task: Literal["regression", "classification"]
+):
     """Build a small MLP head mapping an embedding to the task output.
 
     input_dim is the embedding width from the encoder (fixed by the checkpoint;

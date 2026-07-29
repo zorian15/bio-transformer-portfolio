@@ -6,7 +6,7 @@ Each project stands alone but shares one infrastructure package (`biotp`) and fo
 
 ## The three projects
 
-Build order is deliberate: Project 2 first, because its sequence-only baseline is essentially Project 1, and Project 3 reuses the same machinery.
+Numbering matches build order, so Project 1 is the one to build first. That order is deliberate: Project 1's sequence-only baseline is essentially Project 2's core pipeline, and Project 3 reuses the same machinery.
 
 1. **[grounding-multimodal](projects/grounding-multimodal/)** (flagship, first) — does grounding a protein-sequence representation in text (functional annotations) beat sequence-only, once controls rule out label leakage? A protein-domain take on the broader "does language grounding help" question. [Decisions](projects/grounding-multimodal/DECISION_LOG.md)
 2. **[dms-benchmark](projects/dms-benchmark/)** — when does a fine-tuned protein language model beat a simple structured baseline on deep mutational scanning fitness, and how does that change with the amount of labeled data? [Decisions](projects/dms-benchmark/DECISION_LOG.md)
@@ -18,6 +18,7 @@ Build order is deliberate: Project 2 first, because its sequence-only baseline i
 |---|---|
 | `PLANNING.md` | Source-of-truth plan for all three projects |
 | `src/biotp/` | Shared infrastructure: ESM-2 embeddings, fine-tune harness, leakage-aware eval, HF release helpers |
+| `tests/` | Tests for `biotp`; the stub modules carry strict-`xfail` contract tests (see below) |
 | `projects/*/` | One folder per project: `README.md` (scope) + `DECISION_LOG.md` (experiment log) |
 | `data/` | Datasets (gitignored); see `data/README.md` for what to fetch |
 | `notebooks/` | Exploratory notebooks |
@@ -34,6 +35,14 @@ pip install -e .                       # installs the biotp package (editable)
 
 ## Working conventions
 See `CLAUDE.md`. In short: log every meaningful run in the relevant project's `DECISION_LOG.md`; Python is formatted with Black and checked with ruff/mypy/pytest; results are reported honestly, negatives included.
+
+## Tests
+`pytest` from the repo root. `biotp.utils` is implemented and tested normally. The other four modules are scaffold stubs, so their tests come in two kinds:
+
+- **Signature and convention tests** run for real today. They pin design decisions that should outlive implementation: embedding width comes from the checkpoint rather than a caller argument, `train(mode=...)` and `push_to_hub(private=...)` have no defaults, and `build_model_card` cannot omit `limitations`.
+- **Behavioral tests** are written against the intended contract and marked `xfail(raises=NotImplementedError)`. With `xfail_strict = true` set in `pyproject.toml`, each one flips to a hard failure the moment the stub starts working, which is the cue to delete the marker and keep the assertions rather than leave a test quietly skipped forever.
+
+`tests/test_environment.py` guards one environment invariant: PyTorch must come from conda-forge, not pip. The pip wheel bundles a second `libomp.dylib` alongside the env's own, and importing torch then aborts the process with `OMP: Error #15` instead of raising, which takes down the whole test run rather than failing one test. Since that crash cannot be caught where it happens, the test checks the packaging structurally and reports how to fix it.
 
 ## Running locally vs on SLURM
 The same code runs on the MacBook (Apple MPS) or a SLURM GPU node (CUDA); `biotp.utils.get_device()` selects automatically (set `PYTORCH_ENABLE_MPS_FALLBACK=1` locally). Use SLURM for the heavy one-offs (embedding extraction, fine-tunes) via the templates in `slurm/`, move results back with rsync, and push final checkpoints to Hugging Face. Large artifacts are never committed to git. See `PLANNING.md` (Compute and robustness; Artifacts and storage).
