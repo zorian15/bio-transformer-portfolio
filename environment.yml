@@ -1,0 +1,27 @@
+name: biollm
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - jupyterlab
+  # ML / transformers stack (installed via pip to track latest wheels)
+  - pip:
+      - torch
+      - transformers
+      - datasets
+      - accelerate
+      - peft            # LoRA / parameter-efficient fine-tuning
+      - sentence-transformers
+      - fair-esm        # ESM-2 protein language models
+      - huggingface_hub
+      - black
+      - ruff
+      - mypy
+      - pytest

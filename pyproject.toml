@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "biotp"
+version = "0.0.1"
+description = "Shared infrastructure for the bio-transformer-portfolio experiments (ESM-2 embeddings, fine-tuning, leakage-aware evaluation, releases)."
+requires-python = ">=3.11"
+dependencies = []  # runtime deps are managed via environment.yml (mamba env 'biollm')
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+line-length = 88
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data (tracked README only)
+data/*
+!data/README.md
+
+# Model artifacts / experiment outputs
+*.pt
+*.ckpt
+*.safetensors
+weights/
+checkpoints/
+outputs/
+wandb/
+runs/
+
+# Caches / tooling
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# OS
+.DS_Store
