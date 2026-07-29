@@ -5,8 +5,10 @@ Modules:
     training    -- linear-probe / LoRA / full fine-tune behind one interface.
     evaluation  -- leakage-aware splits and metrics.
     release     -- Hugging Face Hub upload and model-card helpers.
+    utils       -- device selection and seeding (implemented).
 
-These are scaffold stubs. See PLANNING.md for the intended behavior of each.
+The embeddings/training/evaluation/release modules are scaffold stubs; see
+PLANNING.md for the intended behavior of each. utils is implemented.
 """
 
 __version__ = "0.0.1"

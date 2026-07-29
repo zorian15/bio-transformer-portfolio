@@ -6,9 +6,25 @@ Goal: close the hands-on transformer/LLM gap with shippable, openly-released art
 
 Order: **Project 2 first** (per preference), then Project 1, then Project 3. Rationale: Project 2's honest baseline is the sequence-only protein-LM pipeline, which is the core of Project 1, so #2 delivers most of #1 as a byproduct. #3 reuses the same fine-tuning and evaluation harness on immune data.
 
-Assumed compute: one modern GPU (lab/cluster or cloud), frozen-embedding tricks to stay cheap. Adjust if your budget differs.
-
 Guiding principle: MVP first. Get an end-to-end result with frozen embeddings and a small head before adding fine-tuning, fusion, or scale. Ramp complexity only after something runs end to end.
+
+## Compute and robustness (resolved)
+Two-path design: use SLURM GPUs freely while available, but keep every step runnable on the laptop so nothing breaks when access ends. The same code runs in both places; only the device and the model size differ.
+
+Primary machine: M5 MacBook Air, 24 GB unified memory, Apple Silicon (PyTorch MPS backend, no CUDA). SLURM GPU nodes (CUDA) are available now, but assume access may become limited within a few months.
+
+- Device-agnostic code: `biotp.utils.get_device()` picks cuda, then mps, then cpu, so scripts run unchanged on a GPU node or the Mac. Set PYTORCH_ENABLE_MPS_FALLBACK=1 locally for ops that lack MPS kernels.
+- SLURM-ready from day one: `slurm/` holds sbatch templates for the GPU-heavy one-offs (embedding extraction, LoRA or full fine-tunes). Submit these while you have access; the larger ESM-2 sizes are exactly what they are for.
+- Decouple expensive from iterative. Extract ESM-2 embeddings once (on SLURM when available, else on the laptop for small checkpoints), cache to disk, and run all head training and evaluation on the cached vectors. The costly step runs anywhere and only once; fast iteration runs on the Mac indefinitely.
+- Front-load while you can. Run GPU-heavy jobs at every size you might want and cache their outputs (embeddings, checkpoints), so later work is not blocked if SLURM access ends. A rented cloud GPU or Colab is the fallback afterward.
+- ESM-2 sizing: iterate with esm2_t12_35M (dim 480) or esm2_t30_150M (dim 640) locally; treat 650M (dim 1280) as a "run on SLURM, cache the output" job; skip 3B and larger.
+- Prefer parameter-efficient fine-tuning (LoRA) and small checkpoints, so artifacts stay portable and fit the laptop.
+
+## Artifacts and storage (resolved)
+- git tracks only small, text-ish files: code, configs, metrics tables, small figures, and the DECISION_LOG files. Large binaries are gitignored.
+- Embedding caches are regenerable, so stage rather than version them: compute on SLURM (or the laptop for small checkpoints), rsync/scp to the laptop when needed, recompute if lost.
+- Trained checkpoints go to the Hugging Face Hub (durable, survives losing SLURM, doubles as the public release). Keep local copies under gitignored `weights/`.
+- No git-LFS, DVC, or cloud bucket for now; revisit only if artifact volume outgrows rsync + HF.
 
 ---
 

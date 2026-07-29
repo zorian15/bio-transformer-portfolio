@@ -21,6 +21,7 @@ Build order is deliberate: Project 2 first, because its sequence-only baseline i
 | `projects/*/` | One folder per project: `README.md` (scope) + `DECISION_LOG.md` (experiment log) |
 | `data/` | Datasets (gitignored); see `data/README.md` for what to fetch |
 | `notebooks/` | Exploratory notebooks |
+| `slurm/` | sbatch templates for GPU-heavy one-offs; see `slurm/README.md` |
 
 ## Quickstart
 
@@ -33,6 +34,9 @@ pip install -e .                       # installs the biotp package (editable)
 
 ## Working conventions
 See `CLAUDE.md`. In short: log every meaningful run in the relevant project's `DECISION_LOG.md`; Python is formatted with Black and checked with ruff/mypy/pytest; results are reported honestly, negatives included.
+
+## Running locally vs on SLURM
+The same code runs on the MacBook (Apple MPS) or a SLURM GPU node (CUDA); `biotp.utils.get_device()` selects automatically (set `PYTORCH_ENABLE_MPS_FALLBACK=1` locally). Use SLURM for the heavy one-offs (embedding extraction, fine-tunes) via the templates in `slurm/`, move results back with rsync, and push final checkpoints to Hugging Face. Large artifacts are never committed to git. See `PLANNING.md` (Compute and robustness; Artifacts and storage).
 
 ## Releasing to Hugging Face
 Each project's final step publishes weights and a model card to the Hugging Face Hub (see `biotp.release`). Setup is only needed at release time; downloading pretrained models (ESM-2) and training need no account.

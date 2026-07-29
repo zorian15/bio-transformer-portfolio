@@ -8,6 +8,12 @@ Three small, openly-released transformer-and-biology experiments (see `PLANNING.
 ## Environment
 - Use **mamba**, not venv. The env is named **`biollm`**.
 - Create/update from `environment.yml`: `mamba env create -f environment.yml` (or `mamba env update -f environment.yml`), then `mamba activate biollm`, then `pip install -e .`.
+- Device: `biotp.utils.get_device()` returns cuda, then mps, then cpu. Locally set `PYTORCH_ENABLE_MPS_FALLBACK=1`.
+- SLURM: submit `slurm/*.sbatch` for GPU-heavy one-offs while cluster access lasts; use the same `biollm` env on the cluster. Default partition `campus-new`; `chorus` for L40S.
+
+## Artifacts and storage
+- git tracks only small files: code, configs, metrics, small figures, DECISION_LOGs. Large binaries are gitignored.
+- Move embedding caches with rsync (they are regenerable); push final checkpoints to the Hugging Face Hub. No git-LFS/DVC/cloud bucket for now. See PLANNING.md.
 
 ## Experiment workflow
 - Every meaningful run or decision gets an entry in that project's `DECISION_LOG.md` (newest on top): question/hypothesis, setup (data, model, config), result (metric, plot ref), decision/next step.
