@@ -1,6 +1,6 @@
 # grounding-multimodal (Project 2, flagship)
 
-Does grounding a protein-sequence representation in text (functional annotations) measurably improve a downstream task over sequence-only, and does the gain survive controls that rule out label leakage? Mirrors the CellOLMo question in the protein domain.
+Does grounding a protein-sequence representation in text (functional annotations) measurably improve a downstream task over sequence-only, and does the gain survive controls that rule out label leakage? A protein-domain take on the broader "does language grounding help" question.
 
 - **Data:** Swiss-Prot / UniProt entries with sequence plus curated function text (or GO terms / keywords). Downstream task with clean labels: subcellular localization (DeepLoc), EC-number or GO-term classification, or a protein-family property. Optional viral-protein variant for domain flavor.
 - **Model (MVP then extend):** MVP is frozen ESM-2 sequence embedding + frozen text embedding (small sentence encoder) concatenated into a small MLP head. Extend to CLIP-style contrastive alignment and light encoder fine-tuning.

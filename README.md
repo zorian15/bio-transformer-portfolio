@@ -8,7 +8,7 @@ Each project stands alone but shares one infrastructure package (`biotp`) and fo
 
 Build order is deliberate: Project 2 first, because its sequence-only baseline is essentially Project 1, and Project 3 reuses the same machinery.
 
-1. **[grounding-multimodal](projects/grounding-multimodal/)** (flagship, first) — does grounding a protein-sequence representation in text (functional annotations) beat sequence-only, once controls rule out label leakage? Mirrors the CellOLMo question in the protein domain. [Decisions](projects/grounding-multimodal/DECISION_LOG.md)
+1. **[grounding-multimodal](projects/grounding-multimodal/)** (flagship, first) — does grounding a protein-sequence representation in text (functional annotations) beat sequence-only, once controls rule out label leakage? A protein-domain take on the broader "does language grounding help" question. [Decisions](projects/grounding-multimodal/DECISION_LOG.md)
 2. **[dms-benchmark](projects/dms-benchmark/)** — when does a fine-tuned protein language model beat a simple structured baseline on deep mutational scanning fitness, and how does that change with the amount of labeled data? [Decisions](projects/dms-benchmark/DECISION_LOG.md)
 3. **[tcr-antibody-lm](projects/tcr-antibody-lm/)** — can a fine-tuned protein LM predict TCR-epitope specificity (or antibody escape), and does it generalize to unseen epitopes? [Decisions](projects/tcr-antibody-lm/DECISION_LOG.md)
 
