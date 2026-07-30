@@ -17,7 +17,12 @@ biotp = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# Network tests download model checkpoints, so they are opt-in: run them with
+# `pytest -m network`. The default suite stays fast and works offline.
+addopts = "-ra -m 'not network'"
+markers = [
+    "network: downloads model weights or queries a remote API",
+]
 # Strict xfail: a scaffold stub's contract tests fail loudly once it starts
 # working, which is the signal to drop the marker rather than leave the test
 # permanently and silently skipped.

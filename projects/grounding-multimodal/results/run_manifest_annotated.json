@@ -1,0 +1,188 @@
+{
+  "duration_seconds": 44.103,
+  "environment": {
+    "device": "mps",
+    "machine": "arm64",
+    "packages": {
+      "esm": "2.0.0",
+      "numpy": "2.4.6",
+      "pandas": "3.0.3",
+      "scipy": "1.17.1",
+      "sentence_transformers": "5.6.1",
+      "sklearn": "1.8.0",
+      "torch": "2.13.0",
+      "transformers": "5.14.1"
+    },
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "python": "3.11.15"
+  },
+  "git": {
+    "branch": "1-grounding-multimodal-mvp",
+    "commit": "17004ce4dbd947cbf2afa4685edff24b508c5752",
+    "dirty": true
+  },
+  "log_file": "logs/run-arms-20260730T070715Z.log",
+  "params": {
+    "annotated_only": true,
+    "data_root": "data",
+    "log_dir": "logs",
+    "results_dir": "projects/grounding-multimodal/results"
+  },
+  "records": {
+    "classes": [
+      "Cell.membrane",
+      "Cytoplasm",
+      "Endoplasmic.reticulum",
+      "Extracellular",
+      "Golgi.apparatus",
+      "Lysosome/Vacuole",
+      "Mitochondrion",
+      "Nucleus",
+      "Peroxisome",
+      "Plastid"
+    ],
+    "cohort": "annotated subset",
+    "majority_class_accuracy": 0.3047,
+    "proteins": 12626,
+    "result_sequence+free-text": {
+      "accuracy": 0.8446,
+      "accuracy_sd": 0.0015,
+      "macro_f1": 0.7494,
+      "macro_f1_sd": 0.0032
+    },
+    "result_sequence+structured": {
+      "accuracy": 0.9369,
+      "accuracy_sd": 0.0004,
+      "macro_f1": 0.9011,
+      "macro_f1_sd": 0.002
+    },
+    "result_sequence-only": {
+      "accuracy": 0.7582,
+      "accuracy_sd": 0.0016,
+      "macro_f1": 0.6233,
+      "macro_f1_sd": 0.0074
+    },
+    "result_shuffled-text-control": {
+      "accuracy": 0.7382,
+      "accuracy_sd": 0.0061,
+      "macro_f1": 0.5884,
+      "macro_f1_sd": 0.0038
+    },
+    "result_text-only-free": {
+      "accuracy": 0.7448,
+      "accuracy_sd": 0.0063,
+      "macro_f1": 0.6641,
+      "macro_f1_sd": 0.0119
+    },
+    "result_text-only-structured": {
+      "accuracy": 0.9341,
+      "accuracy_sd": 0.0021,
+      "macro_f1": 0.9106,
+      "macro_f1_sd": 0.0035
+    },
+    "split_sizes_seed_0": {
+      "test": 2534,
+      "train": 8578,
+      "val": 1514
+    },
+    "split_sizes_seed_1": {
+      "test": 2534,
+      "train": 8578,
+      "val": 1514
+    },
+    "split_sizes_seed_2": {
+      "test": 2534,
+      "train": 8578,
+      "val": 1514
+    }
+  },
+  "run": "run-arms",
+  "started_at": "2026-07-30T07:07:15+00:00",
+  "status": "completed",
+  "steps": [
+    {
+      "duration_seconds": 0.08,
+      "name": "load prepared table"
+    },
+    {
+      "duration_seconds": 0.072,
+      "name": "build feature blocks"
+    },
+    {
+      "duration_seconds": 6.424,
+      "name": "seed 0: sequence-only"
+    },
+    {
+      "duration_seconds": 1.8,
+      "name": "seed 0: text-only-free"
+    },
+    {
+      "duration_seconds": 1.434,
+      "name": "seed 0: text-only-structured"
+    },
+    {
+      "duration_seconds": 2.051,
+      "name": "seed 0: sequence+free-text"
+    },
+    {
+      "duration_seconds": 2.273,
+      "name": "seed 0: sequence+structured"
+    },
+    {
+      "duration_seconds": 2.121,
+      "name": "seed 0: shuffled-text-control"
+    },
+    {
+      "duration_seconds": 1.605,
+      "name": "seed 1: sequence-only"
+    },
+    {
+      "duration_seconds": 2.377,
+      "name": "seed 1: text-only-free"
+    },
+    {
+      "duration_seconds": 1.738,
+      "name": "seed 1: text-only-structured"
+    },
+    {
+      "duration_seconds": 2.35,
+      "name": "seed 1: sequence+free-text"
+    },
+    {
+      "duration_seconds": 2.371,
+      "name": "seed 1: sequence+structured"
+    },
+    {
+      "duration_seconds": 2.437,
+      "name": "seed 1: shuffled-text-control"
+    },
+    {
+      "duration_seconds": 1.76,
+      "name": "seed 2: sequence-only"
+    },
+    {
+      "duration_seconds": 2.695,
+      "name": "seed 2: text-only-free"
+    },
+    {
+      "duration_seconds": 1.796,
+      "name": "seed 2: text-only-structured"
+    },
+    {
+      "duration_seconds": 3.075,
+      "name": "seed 2: sequence+free-text"
+    },
+    {
+      "duration_seconds": 2.962,
+      "name": "seed 2: sequence+structured"
+    },
+    {
+      "duration_seconds": 2.405,
+      "name": "seed 2: shuffled-text-control"
+    },
+    {
+      "duration_seconds": 0.002,
+      "name": "write results"
+    }
+  ]
+}

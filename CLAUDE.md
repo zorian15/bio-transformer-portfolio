@@ -16,6 +16,11 @@ Three small, openly-released transformer-and-biology experiments (see `PLANNING.
 - git tracks only small files: code, configs, metrics, small figures, DECISION_LOGs. Large binaries are gitignored.
 - Move embedding caches with rsync (they are regenerable); push final checkpoints to the Hugging Face Hub. No git-LFS/DVC/cloud bucket for now. See PLANNING.md.
 
+## Run logging
+- Every pipeline script runs its body inside `biotp.runlog.run_context(...)`, and logs through `get_logger(...)` rather than `print`. Bare prints into a redirected file are block-buffered, so a long step looks identical to a hang.
+- Each run writes `logs/<name>-<timestamp>.log` plus a JSON manifest holding params, per-step timings, recorded counts, git commit and dirty flag, device, and package versions. `logs/` is gitignored; runs that produce committed metrics also drop a manifest copy beside them.
+- Record anything a writeup would cite with `run.record(...)`, so `DECISION_LOG.md` entries cite a manifest rather than memory. See `docs/run-logging.md`.
+
 ## Experiment workflow
 - Every meaningful run or decision gets an entry in that project's `DECISION_LOG.md` (newest on top): question/hypothesis, setup (data, model, config), result (metric, plot ref), decision/next step.
 - MVP first: get an end-to-end number with frozen embeddings and a small head before adding fine-tuning, fusion, or scale.

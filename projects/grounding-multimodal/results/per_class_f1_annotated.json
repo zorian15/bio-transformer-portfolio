@@ -1,0 +1,74 @@
+{
+  "sequence+free-text": {
+    "Cell.membrane": 0.8208092485549133,
+    "Cytoplasm": 0.7787971457696228,
+    "Endoplasmic.reticulum": 0.7006802721088435,
+    "Extracellular": 0.9064327485380117,
+    "Golgi.apparatus": 0.54,
+    "Lysosome/Vacuole": 0.574468085106383,
+    "Mitochondrion": 0.8924302788844621,
+    "Nucleus": 0.921994884910486,
+    "Peroxisome": 0.45454545454545453,
+    "Plastid": 0.8741258741258742
+  },
+  "sequence+structured": {
+    "Cell.membrane": 0.9001883239171374,
+    "Cytoplasm": 0.9258474576271186,
+    "Endoplasmic.reticulum": 0.8888888888888888,
+    "Extracellular": 0.9425981873111783,
+    "Golgi.apparatus": 0.847457627118644,
+    "Lysosome/Vacuole": 0.7450980392156863,
+    "Mitochondrion": 0.9580838323353293,
+    "Nucleus": 0.9760827407886231,
+    "Peroxisome": 0.8461538461538461,
+    "Plastid": 0.9616724738675958
+  },
+  "sequence-only": {
+    "Cell.membrane": 0.7915057915057915,
+    "Cytoplasm": 0.6474358974358975,
+    "Endoplasmic.reticulum": 0.525974025974026,
+    "Extracellular": 0.8888888888888888,
+    "Golgi.apparatus": 0.345679012345679,
+    "Lysosome/Vacuole": 0.3191489361702128,
+    "Mitochondrion": 0.8072289156626506,
+    "Nucleus": 0.832398753894081,
+    "Peroxisome": 0.3076923076923077,
+    "Plastid": 0.8432055749128919
+  },
+  "shuffled-text-control": {
+    "Cell.membrane": 0.7648183556405354,
+    "Cytoplasm": 0.5981688708036622,
+    "Endoplasmic.reticulum": 0.5466237942122186,
+    "Extracellular": 0.874820143884892,
+    "Golgi.apparatus": 0.3373493975903614,
+    "Lysosome/Vacuole": 0.21176470588235294,
+    "Mitochondrion": 0.7653276955602537,
+    "Nucleus": 0.8107769423558897,
+    "Peroxisome": 0.18181818181818182,
+    "Plastid": 0.8111888111888111
+  },
+  "text-only-free": {
+    "Cell.membrane": 0.6843033509700176,
+    "Cytoplasm": 0.6559679037111334,
+    "Endoplasmic.reticulum": 0.5930232558139535,
+    "Extracellular": 0.7441130298273155,
+    "Golgi.apparatus": 0.5490196078431373,
+    "Lysosome/Vacuole": 0.5909090909090909,
+    "Mitochondrion": 0.8389830508474576,
+    "Nucleus": 0.8840486867392697,
+    "Peroxisome": 0.5531914893617021,
+    "Plastid": 0.6640316205533597
+  },
+  "text-only-structured": {
+    "Cell.membrane": 0.9050279329608939,
+    "Cytoplasm": 0.9098621420996819,
+    "Endoplasmic.reticulum": 0.8952380952380953,
+    "Extracellular": 0.9451219512195121,
+    "Golgi.apparatus": 0.8888888888888888,
+    "Lysosome/Vacuole": 0.8333333333333334,
+    "Mitochondrion": 0.9488188976377953,
+    "Nucleus": 0.9696969696969697,
+    "Peroxisome": 0.8461538461538461,
+    "Plastid": 0.9608540925266904
+  }
+}
