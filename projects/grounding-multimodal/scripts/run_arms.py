@@ -356,6 +356,14 @@ def main() -> int:
                 args.data_root / "processed" / "deeploc_annotated.parquet"
             )
 
+        # Batch sizes do not change the vectors, so they are deliberately absent
+        # from the cache key, but they do change how long the run takes. Recording
+        # them keeps a wall-clock comparison between two manifests honest: without
+        # this, a run that changed both the code and the batch size looks from the
+        # artifacts like a run that changed only the code.
+        run.record("embed_batch_size", EMBED_BATCH_SIZE)
+        run.record("text_batch_size", TEXT_BATCH_SIZE)
+
         with run.step("build feature blocks"):
             blocks = build_feature_blocks(
                 table, args.data_root / "processed" / "embeddings"

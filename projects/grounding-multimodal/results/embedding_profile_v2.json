@@ -1,0 +1,106 @@
+{
+  "duration_seconds": 46.569,
+  "environment": {
+    "device": "mps",
+    "machine": "arm64",
+    "packages": {
+      "esm": "2.0.0",
+      "numpy": "2.4.6",
+      "pandas": "3.0.3",
+      "scipy": "1.17.1",
+      "sentence_transformers": "5.6.1",
+      "sklearn": "1.8.0",
+      "torch": "2.13.0",
+      "transformers": "5.14.1"
+    },
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "python": "3.11.15"
+  },
+  "git": {
+    "branch": "3-speed-up-embed-sequences",
+    "commit": "26ee7bca6b3f383adb6db7200ae1e6f2307df171",
+    "dirty": true
+  },
+  "log_file": "logs/benchmark-embeddings-profile-20260730T210757Z.log",
+  "params": {
+    "batch_sizes": [
+      16
+    ],
+    "compare_to": null,
+    "data_root": "data",
+    "log_dir": "logs",
+    "mode": "profile",
+    "reference_path": "tests/data/reference_embeddings.npz",
+    "results_dir": "projects/grounding-multimodal/results",
+    "sample_size": 1000,
+    "tag": "bucketed"
+  },
+  "records": {
+    "device": "mps",
+    "full_lengths": {
+      "count": 13858,
+      "max": 1022,
+      "mean": 473.9,
+      "median": 421,
+      "p90": 995,
+      "total_residues": 6567584
+    },
+    "padding_cost": {
+      "attention_reduction": 3.038,
+      "bucketed": {
+        "attention": 4241172592,
+        "padded_slots": 6575040
+      },
+      "dataset_order": {
+        "attention": 12885391634,
+        "padded_slots": 13237858
+      },
+      "slot_reduction": 2.013,
+      "slot_waste_ratio": 2.016,
+      "useful_residues": 6567584
+    },
+    "population": 13858,
+    "profile": {
+      "batch_size": 16,
+      "mirrored_total_seconds": 22.96,
+      "phases_seconds": {
+        "forward": 22.49,
+        "pool_and_transfer": 0.05,
+        "tokenize": 0.41
+      },
+      "phases_share": {
+        "forward": 0.9797,
+        "pool_and_transfer": 0.0023,
+        "tokenize": 0.018
+      },
+      "real_total_seconds": 22.52,
+      "sequences": 200
+    },
+    "sample_fingerprint": "6b74b6d3bd449470",
+    "sample_lengths": {
+      "count": 1000,
+      "max": 1022,
+      "mean": 473.7,
+      "median": 421,
+      "p90": 993,
+      "total_residues": 473738
+    }
+  },
+  "run": "benchmark-embeddings-profile",
+  "started_at": "2026-07-30T21:07:57+00:00",
+  "status": "completed",
+  "steps": [
+    {
+      "duration_seconds": 0.087,
+      "name": "load sequences"
+    },
+    {
+      "duration_seconds": 0.946,
+      "name": "load esm2_t12_35M_UR50D"
+    },
+    {
+      "duration_seconds": 45.487,
+      "name": "profile phases"
+    }
+  ]
+}

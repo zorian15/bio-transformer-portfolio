@@ -153,9 +153,12 @@ def _length_bucketed_batches(lengths: list[int], batch_size: int) -> list[list[i
     """Group sequence indices into batches of similar length, longest batch first.
 
     Batching in dataset order pads every batch to its longest member, and with a
-    median length of 421 against a p90 of 995 that meant pushing 2.0x more residue
-    slots through the model than the data contains, at 3.0x the attention cost
-    (issue #3). Grouping similar lengths together removes almost all of it.
+    median length of 421 against a p90 of 995 that wastes most of the batch. Over
+    the 13,858 DeepLoc proteins the waste grows with batch size, since a bigger
+    batch is likelier to contain one long sequence: 1.85x the necessary residue
+    slots at batch 8 and 2.01x at batch 16, at 2.64x and 3.04x the attention cost
+    respectively (issue #3). Grouping similar lengths together removes almost all
+    of it, leaving 1.0005x at batch 8.
 
     Longest first, so peak memory is claimed by the first batch. An input that
     cannot fit then fails in the first seconds rather than forty minutes in.
@@ -184,8 +187,13 @@ def _mean_pool_residues(representations: Any, lengths: Any) -> Any:
     mask built from the lengths is what keeps a short sequence in a batch of long
     ones unaffected by its neighbours; the batch-invariance and padding-isolation
     tests pin that. Pooling the batch in one masked reduction, rather than slicing
-    each sequence in a Python loop, also cuts the device-to-host transfers from one
+    each sequence in a Python loop, cuts the transfers of pooled vectors from one
     per sequence to one per batch.
+
+    The mask assertion costs two further device syncs per batch, so the honest
+    count is three, not one. It is kept anyway: profiling puts this whole function
+    at 0.1% of runtime, and a mask that silently covered the wrong positions would
+    corrupt every vector while leaving the numbers plausible.
     """
     import torch
 
@@ -275,7 +283,7 @@ def embed_sequences(
         representations = result["representations"][model.repr_layer]
 
         batch_lengths = torch.tensor(
-            [len(sequence) for sequence in batch], device=representations.device
+            [lengths[index] for index in indices], device=representations.device
         )
         pooled = _mean_pool_residues(representations, batch_lengths)
         # Scatter back to the caller's order, undoing the length bucketing.

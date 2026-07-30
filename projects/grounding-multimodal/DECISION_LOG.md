@@ -15,11 +15,11 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
-### 2026-07-30: embedding is 4.8x faster, and it was all padding
+### 2026-07-30: embedding is 4.8x faster end to end, and padding was the cause
 
 - **Question / hypothesis:** embedding 13,858 proteins took 100 minutes at 2.3 seq/s, which dominated the pipeline and would have made the 150M and 650M checkpoints in `PLANNING.md` impractical. Issue #3 proposed three causes: padding waste from unsorted batching, per-sequence device synchronisation, and too small a batch size. Which of them actually costs the time?
-- **Setup:** ESM-2 `esm2_t12_35M_UR50D` on Apple MPS, the same 13,858 single-label proteins. Harness: `scripts/benchmark_embeddings.py`, in three modes (phase profile, alternating A/B, throughput). Fast loop is a 1,000-protein sample drawn proportionally per length decile, seed 0, so it matches the full length distribution (sample mean 473.7 against 473.9, median 421 against 421) rather than being an easier subset. Authoritative measure is the `build feature blocks` step in `results/run_manifest_all.json`, before and after.
-- **Result:** 4.79x on the sequence-embedding step, and the answer to "which cause" is essentially "one of them".
+- **Setup:** ESM-2 `esm2_t12_35M_UR50D` on Apple MPS, the same 13,858 single-label proteins. Harness: `scripts/benchmark_embeddings.py`, in four modes (phase profile, alternating A/B, throughput, and writing the reference anchor). Profiling manifests are committed as `results/embedding_profile_v1.json` and `_v2.json`, and the A/B as `results/embedding_benchmark_ab.json`, so the tables below cite artifacts rather than memory. Fast loop is a 1,000-protein sample drawn proportionally per length decile, seed 0, so it matches the full length distribution (sample mean 473.7 against 473.9, median 421 against 421) rather than being an easier subset. Authoritative measure is the `build feature blocks` step in `results/run_manifest_all.json`, before and after.
+- **Result:** the sequence-embedding step went from 100 minutes to 21, a 4.79x end-to-end improvement, of which roughly 3x is the code change under controlled measurement and the rest is the batch retune and a larger bucketing pool. The answer to "which of the three candidates" is essentially "one of them".
 
   **Profile first, before changing anything.** With device syncs separating the phases:
 
@@ -31,15 +31,24 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
   So candidate 2, per-sequence device synchronisation, was never a real cost: 16 transfers per batch total 0.08s. The hypothesis mistook an accounting artifact for a bottleneck, because an un-synced forward pass hides inside whichever later line first touches its result, which was the `.cpu()` call. Pooling was still vectorised, since it is a few lines and its share grows as the forward gets cheaper, but it is honestly worth ~0.1% here and no more.
 
-  **Padding was the whole story**, because it lives inside the forward pass. At `batch_size=16` over the full cohort, dataset-order batching pushed 13,237,858 padded residue slots through the model against 6,567,584 actual residues, a 2.01x waste, and 3.04x the necessary attention cost. Length-bucketed batching brought padded slots to 6,571,040, which is 1.0005x the data itself.
+  **Padding was the cause**, because it lives inside the forward pass. The waste grows with batch size, since a larger batch is likelier to contain one long sequence, so the figures have to be quoted per batch size:
+
+  | batch size | dataset-order slots | bucketed slots | waste | attention cost |
+  |---:|---:|---:|---:|---:|
+  | 8 (what the pipeline now runs) | 12,152,018 | 6,571,040 | 1.85x | 2.64x |
+  | 16 (what it ran before) | 13,237,858 | 6,575,040 | 2.01x | 3.04x |
+
+  Against 6,567,584 actual residues, bucketing leaves 1.0005x at batch 8: essentially no padding at all.
 
   **Authoritative comparison**, both runs on MPS with the same checkpoint and cohort, manifests in `results/`:
 
-  | | before | after | speedup |
+  | | before | after | ratio |
   |---|---:|---:|---:|
   | sequence embedding | 6,024.2s (2.30 seq/s) | 1,256.6s (11.03 seq/s) | **4.79x** |
   | build feature blocks | 6,169.6s | 1,337.6s | 4.61x |
   | full run, 18 arm-seed fits included | 6,230.9s | 1,380.7s | 4.51x |
+
+  **That 4.79x is the pipeline, not the code change in isolation, and the two should not be confused.** The before run used `EMBED_BATCH_SIZE=16` and the after run uses 8, so it moves two variables. The controlled measurement, holding batch size fixed and alternating the implementations, is **2.92x at batch 8 and 3.38x at batch 16** on 300 proteins. The remainder comes from two places: the batch retune, which helped v1 too (109.2s against 132.6s per 300 proteins), and pool size, since bucketing has more similar-length neighbours to work with over 13,858 proteins than over 300. What is fair to claim is that the step now takes 21 minutes instead of 100, and that padding is why.
 
   Projected 650M wall time, at the parameter-count ratio and assuming the pipeline stays compute-bound: about 30 hours before, about 6.3 hours after. That is the number that decides whether the larger checkpoints are reachable on this hardware, and it moves from "no" to "overnight".
 
@@ -54,15 +63,21 @@ Chronological record of experiments and the decisions they drove. Newest entries
   | sequence + structured | 0.906 ± 0.006 | 0.906 ± 0.005 |
   | shuffled-text control | 0.583 ± 0.003 | 0.578 ± 0.006 |
 
-  The headline +0.123 gain reproduces to three decimals, and the control still lands below sequence-only. Nothing in the 2026-07-30 entry above needs revising.
+  The headline gain is +0.124 (0.7400 against 0.6157), against +0.123 before; the change is in the fourth decimal and the rounding tipped. The control still lands below sequence-only, and the annotated-only cohort was re-run too, giving +0.130 there against +0.126 before. Nothing in the 2026-07-30 entry above needs revising.
+
+  **Aggregates are stable, rare classes are not.** Sequence-only Peroxisome F1 went 0.244 to 0.167 between two runs whose only difference is the embedding code path. That class has about 30 test proteins, so single-protein flips move it by 0.03 or more, and the same instability is why its "roughly doubles with text" claim is now "roughly triples" (0.167 to 0.519). Read the per-class numbers in `docs/grounding-multimodal/results.md` as noisy at that resolution; the macro-F1 aggregates, which average over ten classes, moved by 0.001.
 
 - **Two things worth recording, because both cost time to learn:**
-  - **Bigger batches are worse here, not better.** Candidate 3 was backwards. `batch_size=64` had to be abandoned after 12 minutes on 1,000 proteins, against 84 seconds at 16, and it drove the machine to 8.3 GB of 9.2 GB swap. On MPS the binding constraint is the attention matrix, not device utilisation: a batch of 64 at 1022 positions materialises roughly 5 GB of attention. Settled on 8, where the medians beat 16 slightly (37.4s against 39.2s per 300 proteins) and, more importantly, three repeats fell within 0.3s of each other while 16 spread over 14s.
-  - **Single-shot before/after timing on a laptop is not a measurement.** An identical configuration came out 3.7x apart (83.8s and 306.7s) either side of the run that exhausted swap. The fix was `--mode ab`, which runs the old and new implementations alternately in one process and takes the median, so drift hits both arms. Under alternation the 300-protein speedup is 3.38x at batch 16; the full run reaches 4.79x because bucketing works better the larger the pool, with 13,858 proteins leaving essentially no padding at all. The A/B also asserts the two implementations agree numerically, so a "speedup" that changed the answers would fail rather than be reported.
+  - **Bigger batches are worse here, not better.** Candidate 3 was backwards. `batch_size=64` had to be abandoned after 12 minutes on 1,000 proteins, against 84 seconds at 16, and it drove the machine to 8.3 GB of 9.2 GB swap. On MPS the binding constraint is the attention matrix, not device utilisation: a batch of 64 at 1022 positions materialises roughly 5 GB of attention.
+
+    Settled on 8, and the reason is peak memory rather than the stopwatch. Peak attention scales as batch x heads x positions squared, so 8 halves the worst case against 16, which is arithmetic rather than a measurement and does not care how warm the machine was. The timing evidence is weaker than it first looked: 8 did post a better median (37.4s against 39.2s per 300 proteins) with three repeats inside 0.3s while 16 spread over 14s, but the two batch sizes were measured in sequence rather than interleaved, and 16 ran first during the thermal ramp. Batch 16's best round (32.5s) beats every batch-8 round. So the honest reading is that 8 and 16 are within noise of each other on speed, and 8 wins on headroom.
+  - **Single-shot before/after timing on a laptop is not a measurement.** An identical configuration came out 3.7x apart (83.8s and 306.7s) either side of the run that exhausted swap. An early draft of this entry reported 4.72x on the fast loop off a baseline taken while the machine was degraded. The fix was `--mode ab`, which runs the old and new implementations against the same machine state, flipping which goes first each repeat, and takes the median. It also asserts the two implementations agree numerically, so a "speedup" that changed the answers fails rather than getting reported. Anything measured by a single before/after pair separated by minutes, including the batch-size comparison above, should be read as indicative and not much more.
 - **Decision / next step:**
   - Take the 4.79x, and treat the 650M checkpoint as reachable on this hardware.
   - `EMBEDDING_IMPL_VERSION` is 2. Every cache invalidated automatically and recomputed, which is exactly what #4 was built for: the "after" run would otherwise have hit the cache and reported a speedup that measured nothing. `docs/embedding-cache.md` records v2 as the worked example.
   - Correctness is anchored, not assumed: `tests/data/reference_embeddings.npz` holds 24 vectors written by the v1 code before the rewrite, and the v2 code still reproduces them within float32 tolerance.
+  - Both cohorts were re-run, `_all` and `_annotated`, so no committed metric is left describing v1 vectors. Wall-clock configuration now lands in the manifest too (`embed_batch_size`, `text_batch_size`), because this entry's own headline showed how easily a run that changed two things reads from the artifacts as a run that changed one.
+  - Open gap, filed as a follow-up: the reference anchor is `@pytest.mark.network` and there is no CI, so the v1-versus-v2 numerical check runs only when someone remembers `pytest -m network`. That is the test which makes the version bump defensible, and it should not depend on memory.
   - Not done, and deliberately: the per-modality cache version. One `EMBEDDING_IMPL_VERSION` covers both encoders, so this sequence-side change also invalidated the text caches, costing 72 seconds of needless recompute. Splitting it would save that and add a second constant for a human to remember. Over-invalidation is the safe direction, so it stays as is.
 
 ### 2026-07-30: MVP six-arm result. Free text helps, and the control holds

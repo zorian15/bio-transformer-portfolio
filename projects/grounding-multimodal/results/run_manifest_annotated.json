@@ -1,5 +1,5 @@
 {
-  "duration_seconds": 44.103,
+  "duration_seconds": 42.381,
   "environment": {
     "device": "mps",
     "machine": "arm64",
@@ -17,11 +17,11 @@
     "python": "3.11.15"
   },
   "git": {
-    "branch": "1-grounding-multimodal-mvp",
-    "commit": "17004ce4dbd947cbf2afa4685edff24b508c5752",
+    "branch": "3-speed-up-embed-sequences",
+    "commit": "7461e811f8863a0ea8f928d153953f5a69db0cc6",
     "dirty": true
   },
-  "log_file": "logs/run-arms-20260730T070715Z.log",
+  "log_file": "logs/run-arms-20260730T225505Z.log",
   "params": {
     "annotated_only": true,
     "data_root": "data",
@@ -45,28 +45,28 @@
     "majority_class_accuracy": 0.3047,
     "proteins": 12626,
     "result_sequence+free-text": {
-      "accuracy": 0.8446,
-      "accuracy_sd": 0.0015,
-      "macro_f1": 0.7494,
-      "macro_f1_sd": 0.0032
+      "accuracy": 0.8448,
+      "accuracy_sd": 0.0013,
+      "macro_f1": 0.7496,
+      "macro_f1_sd": 0.0033
     },
     "result_sequence+structured": {
-      "accuracy": 0.9369,
-      "accuracy_sd": 0.0004,
-      "macro_f1": 0.9011,
-      "macro_f1_sd": 0.002
+      "accuracy": 0.9384,
+      "accuracy_sd": 0.0024,
+      "macro_f1": 0.9032,
+      "macro_f1_sd": 0.0055
     },
     "result_sequence-only": {
-      "accuracy": 0.7582,
-      "accuracy_sd": 0.0016,
-      "macro_f1": 0.6233,
-      "macro_f1_sd": 0.0074
+      "accuracy": 0.757,
+      "accuracy_sd": 0.0023,
+      "macro_f1": 0.6193,
+      "macro_f1_sd": 0.0071
     },
     "result_shuffled-text-control": {
-      "accuracy": 0.7382,
-      "accuracy_sd": 0.0061,
+      "accuracy": 0.7378,
+      "accuracy_sd": 0.0054,
       "macro_f1": 0.5884,
-      "macro_f1_sd": 0.0038
+      "macro_f1_sd": 0.0049
     },
     "result_text-only-free": {
       "accuracy": 0.7448,
@@ -97,91 +97,91 @@
     }
   },
   "run": "run-arms",
-  "started_at": "2026-07-30T07:07:15+00:00",
+  "started_at": "2026-07-30T22:55:05+00:00",
   "status": "completed",
   "steps": [
     {
-      "duration_seconds": 0.08,
+      "duration_seconds": 0.037,
       "name": "load prepared table"
     },
     {
-      "duration_seconds": 0.072,
+      "duration_seconds": 0.062,
       "name": "build feature blocks"
     },
     {
-      "duration_seconds": 6.424,
+      "duration_seconds": 3.584,
       "name": "seed 0: sequence-only"
     },
     {
-      "duration_seconds": 1.8,
+      "duration_seconds": 3.172,
       "name": "seed 0: text-only-free"
     },
     {
-      "duration_seconds": 1.434,
+      "duration_seconds": 1.424,
       "name": "seed 0: text-only-structured"
     },
     {
-      "duration_seconds": 2.051,
+      "duration_seconds": 1.975,
       "name": "seed 0: sequence+free-text"
     },
     {
-      "duration_seconds": 2.273,
+      "duration_seconds": 2.232,
       "name": "seed 0: sequence+structured"
     },
     {
-      "duration_seconds": 2.121,
+      "duration_seconds": 2.451,
       "name": "seed 0: shuffled-text-control"
     },
     {
-      "duration_seconds": 1.605,
+      "duration_seconds": 1.402,
       "name": "seed 1: sequence-only"
     },
     {
-      "duration_seconds": 2.377,
+      "duration_seconds": 1.717,
       "name": "seed 1: text-only-free"
     },
     {
-      "duration_seconds": 1.738,
+      "duration_seconds": 1.655,
       "name": "seed 1: text-only-structured"
     },
     {
-      "duration_seconds": 2.35,
+      "duration_seconds": 1.868,
       "name": "seed 1: sequence+free-text"
     },
     {
-      "duration_seconds": 2.371,
+      "duration_seconds": 2.332,
       "name": "seed 1: sequence+structured"
     },
     {
-      "duration_seconds": 2.437,
+      "duration_seconds": 2.146,
       "name": "seed 1: shuffled-text-control"
     },
     {
-      "duration_seconds": 1.76,
+      "duration_seconds": 1.977,
       "name": "seed 2: sequence-only"
     },
     {
-      "duration_seconds": 2.695,
+      "duration_seconds": 3.502,
       "name": "seed 2: text-only-free"
     },
     {
-      "duration_seconds": 1.796,
+      "duration_seconds": 2.066,
       "name": "seed 2: text-only-structured"
     },
     {
-      "duration_seconds": 3.075,
+      "duration_seconds": 2.789,
       "name": "seed 2: sequence+free-text"
     },
     {
-      "duration_seconds": 2.962,
+      "duration_seconds": 2.988,
       "name": "seed 2: sequence+structured"
     },
     {
-      "duration_seconds": 2.405,
+      "duration_seconds": 2.731,
       "name": "seed 2: shuffled-text-control"
     },
     {
-      "duration_seconds": 0.002,
+      "duration_seconds": 0.004,
       "name": "write results"
     }
   ]

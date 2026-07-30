@@ -480,10 +480,11 @@ def test_cache_miss_distinguishes_changed_inputs_from_changed_code() -> None:
 # --- Length-bucketed batching and vectorised pooling (issue #3) ---------------
 #
 # Batching in dataset order pads every batch to its longest member, which pushed
-# 2.09x more residues through the model than the data contains. Bucketing by
-# length fixes that, at the cost of embedding rows in an order that is not the
-# caller's. The tests below pin the two halves of that trade: the reordering
-# happens, and it is invisible from outside.
+# 1.85x more residues through the model than the data contains at the batch size
+# the pipeline runs (8), and 2.01x at 16. Bucketing by length fixes that, at the
+# cost of embedding rows in an order that is not the caller's. The tests below pin
+# the two halves of that trade: the reordering happens, and it is invisible from
+# outside.
 
 STUB_WIDTH = 4
 STUB_LIMIT = 64

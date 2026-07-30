@@ -6,11 +6,17 @@ to make the before and after numbers apples to apples: same sample, same device,
 same checkpoint, recorded to JSON with a fingerprint that fails loudly if the two
 runs did not in fact embed the same sequences.
 
-Three modes:
+Four modes:
 
     --mode profile     attribute time to tokenization, forward, and pooling
     --mode benchmark   seq/s on a fixed length-matched sample, per batch size
+    --mode ab          time the old and new implementations against each other
     --mode reference   freeze a small correctness anchor under tests/data/
+
+`--mode ab` is the one to trust for a speedup claim. Single-shot before/after
+timing on a laptop measures the laptop: an identical configuration here came out
+3.7x apart either side of a run that exhausted swap. The A/B runs both
+implementations against the same machine state and checks they agree numerically.
 
 The fast loop is a 1,000-protein sample drawn to match the full length
 distribution, not the shortest 1,000, which would flatter any fix to padding
@@ -61,6 +67,11 @@ REFERENCE_SEQUENCES = 24
 SAMPLE_SIZE = 1000
 SAMPLE_SEED = 0
 LENGTH_STRATA = 10
+
+# 650M against the 35M actually benchmarked. Used only for the roadmap projection,
+# which assumes the pipeline stays compute-bound and is a planning estimate rather
+# than a measurement.
+PARAMETER_RATIO_650M = 18
 
 # Phase attribution runs every batch twice, once mirrored and once for real, so it
 # uses a smaller sample than the throughput benchmark.
@@ -124,7 +135,8 @@ def length_matched_sample(lengths: list[int], size: int, seed: int) -> list[int]
     if len(chosen) > size:
         chosen = [int(index) for index in rng.choice(chosen, size, replace=False)]
     elif len(chosen) < size:
-        spare = [index for index in by_length if index not in set(chosen)]
+        already = set(chosen)
+        spare = [index for index in by_length if index not in already]
         short_by = size - len(chosen)
         chosen.extend(
             int(index) for index in rng.choice(spare, short_by, replace=False)
@@ -166,6 +178,10 @@ def padding_cost(lengths: list[int], batch_size: int) -> dict[str, Any]:
         sorted(range(len(lengths)), key=lambda index: -lengths[index])
     )
     return {
+        # Every figure below is specific to this batch size, and the ratios move a
+        # lot with it: quoting one without the other is how a batch-8 slot count
+        # ends up labelled as a batch-16 result.
+        "batch_size": batch_size,
         "useful_residues": useful,
         "dataset_order": {
             "padded_slots": dataset_slots,
@@ -327,19 +343,34 @@ def compare_implementations(
     being measured. Interleaving makes both arms share whatever the machine is
     doing, and the median over repeats absorbs the rest.
 
+    The order flips every repeat, rather than always running v1 first. Within a
+    single repeat the second arm inherits whatever the first one did to the
+    machine, so a fixed order biases one arm consistently and a median cannot
+    remove it. Flipping makes that bias cancel across repeats instead.
+
     The two arms must also agree numerically, which is checked here rather than
     assumed: a speedup that changed the answers would not be a speedup.
     """
     assert repeats > 0, f"repeats must be positive, got {repeats}"
 
-    # One untimed pass, so neither arm pays for lazily compiled kernels.
-    timed(embed_sequences, model, sequences[: min(len(sequences), 8)], batch_size)
+    # One untimed pass per arm, so neither pays for lazily compiled kernels.
+    warmup = sequences[: min(len(sequences), 8)]
+    timed(embed_sequences_v1, model, warmup, batch_size)
+    timed(embed_sequences, model, warmup, batch_size)
 
     old_times: list[float] = []
     new_times: list[float] = []
     for repeat in range(repeats):
-        old_seconds, old_out = timed(embed_sequences_v1, model, sequences, batch_size)
-        new_seconds, new_out = timed(embed_sequences, model, sequences, batch_size)
+        if repeat % 2 == 0:
+            old_seconds, old_out = timed(
+                embed_sequences_v1, model, sequences, batch_size
+            )
+            new_seconds, new_out = timed(embed_sequences, model, sequences, batch_size)
+        else:
+            new_seconds, new_out = timed(embed_sequences, model, sequences, batch_size)
+            old_seconds, old_out = timed(
+                embed_sequences_v1, model, sequences, batch_size
+            )
         np.testing.assert_allclose(new_out, old_out, rtol=1e-4, atol=1e-5)
 
         old_times.append(old_seconds)
@@ -358,6 +389,7 @@ def compare_implementations(
     old_median = statistics.median(old_times)
     new_median = statistics.median(new_times)
     return {
+        "mode": "ab",
         "batch_size": batch_size,
         "sequences": len(sequences),
         "repeats": repeats,
@@ -399,7 +431,7 @@ def project_full_run(seconds_per_sequence: float, population: int) -> dict[str, 
     return {
         "full_cohort_seconds": round(full, 1),
         "full_cohort_minutes": round(full / 60, 1),
-        "projected_650m_minutes": round(full * 18 / 60, 1),
+        "projected_650m_minutes": round(full * PARAMETER_RATIO_650M / 60, 1),
     }
 
 
@@ -448,7 +480,20 @@ def write_reference(sequences: list[str], destination: Path) -> dict[str, Any]:
 
 
 def compare(previous: dict[str, Any], current: dict[str, Any]) -> str:
-    """Render the before/after table the issue asks for, guarding the comparison."""
+    """Render the before/after table the issue asks for, guarding the comparison.
+
+    Only `--mode benchmark` payloads are comparable this way. A profile payload
+    has no `runs`, and an A/B payload already carries both arms and its own
+    speedup, so pointing this at either is a mistake worth an error rather than a
+    confusing table or a KeyError from somewhere deeper.
+    """
+    for label, payload in (("previous", previous), ("current", current)):
+        assert payload.get("mode") == "benchmark", (
+            f"{label} payload is mode {payload.get('mode')!r}, not 'benchmark'; "
+            "an A/B payload already reports its own speedup"
+        )
+        assert payload["runs"], f"{label} payload has no timed runs"
+
     assert previous["sample_fingerprint"] == current["sample_fingerprint"], (
         "the two runs embedded different sequences, so their times are not "
         f"comparable ({previous['sample_fingerprint']} vs "
@@ -534,10 +579,16 @@ def main() -> int:
         sample = [population[index] for index in indices]
         sample_lengths = [lengths[index] for index in indices]
 
+        # One entry per batch size, because the padding ratios move with it and a
+        # single unlabelled figure invites quoting one batch size's numerator
+        # against another's denominator.
+        padding = [padding_cost(lengths, size) for size in args.batch_sizes]
+        sample_digest = fingerprint(sample)
+
         run.record("full_lengths", length_summary(lengths))
         run.record("sample_lengths", length_summary(sample_lengths))
-        run.record("sample_fingerprint", fingerprint(sample))
-        run.record("padding_cost", padding_cost(lengths, args.batch_sizes[0]))
+        run.record("sample_fingerprint", sample_digest)
+        run.record("padding_cost", padding)
 
         with run.step(f"load {SEQUENCE_ENCODER}"):
             model = load_esm2(SEQUENCE_ENCODER)
@@ -545,6 +596,9 @@ def main() -> int:
 
         results: list[dict[str, Any]] = []
         if args.mode == "profile":
+            assert (
+                len(args.batch_sizes) == 1
+            ), f"--mode profile takes one batch size, got {args.batch_sizes}"
             with run.step("profile phases"):
                 profile = profile_phases(
                     model, sample[:PROFILE_SEQUENCES], args.batch_sizes[0]
@@ -575,10 +629,10 @@ def main() -> int:
             "device": model.device,
             "population": len(population),
             "sample_size": args.sample_size,
-            "sample_fingerprint": fingerprint(sample),
+            "sample_fingerprint": sample_digest,
             "sample_lengths": length_summary(sample_lengths),
             "full_lengths": length_summary(lengths),
-            "padding_cost": padding_cost(lengths, args.batch_sizes[0]),
+            "padding_cost": padding,
             "runs": results,
             "profile": run.records.get("profile"),
         }

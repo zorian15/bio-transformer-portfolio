@@ -94,19 +94,17 @@ proteins or only on annotated ones. Both were run:
 | Cohort | n test | sequence-only | sequence+free text | Δ |
 |---|---:|---:|---:|---:|
 | All proteins | 2,773 | 0.616 | 0.740 | +0.124 |
-| Annotated only | 2,534 | 0.623 | 0.749 | +0.126 |
+| Annotated only | 2,534 | 0.619 | 0.750 | +0.130 |
 
-**The choice does not matter.** The gain is 0.124 on one cohort and 0.126 on the
-other, well inside seed noise. Reporting the all-proteins number is therefore
-honest and loses nothing.
+**The choice does not matter.** The gain is 0.124 on one cohort and 0.130 on the
+other, close enough given a seed spread of 0.003 to 0.007 that the conclusion is
+the same either way. Reporting the all-proteins number is therefore honest and
+loses nothing.
 
-One provenance caveat on that table: the annotated-only row comes from the run of
-2026-07-30 07:07 UTC (`results/run_manifest_annotated.json`), which predates the
-embedding speedup and so was fitted on `impl_version` 1 vectors, while the
-all-proteins row is from the post-speedup run. The two versions of the vectors
-differ only at the level of float noise, and the all-proteins arms moved by at
-most 0.005 macro-F1 when refitted, so the comparison stands; it is not, strictly,
-two runs of identical code.
+Both rows come from `impl_version` 2 vectors: the annotated-only cohort was
+re-run alongside the all-proteins one after the embedding speedup
+(`results/run_manifest_annotated.json`), so the table is two runs of identical
+code rather than a comparison across implementations.
 
 One difference is worth noting: text-only rises from 0.617 to 0.664 when
 un-annotated proteins are excluded, which is expected, since on the full cohort
@@ -192,10 +190,14 @@ Sequence embedding used to be the whole cost, at 6,024s and 2.3 sequences/second
 ([#3](https://github.com/zorian15/bio-transformer-portfolio/issues/3)). Batching
 by length rather than in dataset order, so a batch is not padded to the longest
 protein in an arbitrary slice of the dataset, took it to 1,257s and 11.0
-sequences/second, a 4.8x speedup on that step and 4.5x on the full run. Padded
-residue slots over the cohort fell from 13.2M to 6.57M against 6.57M actual
-residues, which is essentially no padding at all. The details, including why the
-other two hypotheses in #3 were wrong, are in the 2026-07-30 speedup entry of
+sequences/second: 4.8x on that step and 4.5x on the full run. Padded residue slots
+over the cohort fell from 12.2M to 6.571M against 6.568M actual residues, which is
+essentially no padding at all.
+
+Those wall-clock figures compare the pipeline before and after, which also
+re-tuned the batch size from 16 to 8; holding batch size fixed, the code change
+alone measures about 3x. The details, including why the other two hypotheses in #3
+were wrong, are in the 2026-07-30 speedup entry of
 [`DECISION_LOG.md`](../../projects/grounding-multimodal/DECISION_LOG.md).
 
 ```bash
