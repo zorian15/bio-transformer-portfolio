@@ -81,3 +81,31 @@ Neither is airtight, and that is the honest position. What they do is convert a
 silent runtime failure into a visible code-review question, and the asymmetry
 justifies it: an unnecessary bump costs a recompute, a missed one costs the truth
 of a result.
+
+## Version history
+
+| `impl_version` | Change | Vectors moved? |
+|---:|---|---|
+| 1 | The MVP implementation: dataset-order batching, per-sequence pooling | baseline |
+| 2 | Length-bucketed batching and on-device masked pooling (issue #3) | yes, at ~1e-6 |
+
+Version 2 is the case the mechanism was built for, and it is worth reading as a
+worked example. The *pooling rule* did not change: it is still the mean over
+residue positions, excluding BOS, EOS, and padding, so the named `pooling` field
+reads exactly as before and the key would not have moved on its own. What changed
+underneath is that pooling became a masked sum over the batch instead of a slice
+per sequence, and batches are now grouped by length, so a given protein rides in
+a differently padded batch than it used to. ESM-2 is only padding-invariant to
+about 1e-5, so the vectors are close but not bit-identical.
+
+That is precisely the shape of change `impl_version` exists to catch: no named
+field describes it, and every existing cache file would otherwise have kept
+serving v1 vectors while the repository described v2 code. It also mattered for
+the benchmark that motivated the change, since an "after" run that hit the cache
+would have reported a speedup measuring nothing at all.
+
+The v1 vectors are not lost to the argument, incidentally.
+`tests/data/reference_embeddings.npz` holds 24 of them, written before the
+rewrite, and `test_embed_sequences_matches_the_frozen_reference` checks that v2
+still reproduces them within float32 tolerance. The version bump says "these are
+different"; the anchor says "and here is how much".

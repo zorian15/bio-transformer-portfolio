@@ -1,0 +1,82 @@
+{
+  "checkpoint": "esm2_t12_35M_UR50D",
+  "device": "mps",
+  "full_lengths": {
+    "count": 13858,
+    "max": 1022,
+    "mean": 473.9,
+    "median": 421,
+    "p90": 995,
+    "total_residues": 6567584
+  },
+  "mode": "ab",
+  "padding_cost": {
+    "attention_reduction": 3.038,
+    "bucketed": {
+      "attention": 4241172592,
+      "padded_slots": 6575040
+    },
+    "dataset_order": {
+      "attention": 12885391634,
+      "padded_slots": 13237858
+    },
+    "slot_reduction": 2.013,
+    "slot_waste_ratio": 2.016,
+    "useful_residues": 6567584
+  },
+  "population": 13858,
+  "profile": null,
+  "runs": [
+    {
+      "batch_size": 16,
+      "repeats": 3,
+      "sequences": 300,
+      "speedup": 3.384,
+      "v1_median_seconds": 132.62,
+      "v1_seconds": [
+        102.66,
+        132.62,
+        138.15
+      ],
+      "v1_sequences_per_second": 2.262,
+      "v2_median_seconds": 39.19,
+      "v2_seconds": [
+        32.45,
+        39.19,
+        46.66
+      ],
+      "v2_sequences_per_second": 7.655
+    },
+    {
+      "batch_size": 8,
+      "repeats": 3,
+      "sequences": 300,
+      "speedup": 2.92,
+      "v1_median_seconds": 109.22,
+      "v1_seconds": [
+        115.13,
+        109.22,
+        104.73
+      ],
+      "v1_sequences_per_second": 2.747,
+      "v2_median_seconds": 37.4,
+      "v2_seconds": [
+        37.53,
+        37.2,
+        37.4
+      ],
+      "v2_sequences_per_second": 8.022
+    }
+  ],
+  "sample_fingerprint": "e1a39fc5e56de246",
+  "sample_lengths": {
+    "count": 300,
+    "max": 1022,
+    "mean": 477.8,
+    "median": 421,
+    "p90": 985,
+    "total_residues": 143346
+  },
+  "sample_size": 300,
+  "tag": "ab"
+}

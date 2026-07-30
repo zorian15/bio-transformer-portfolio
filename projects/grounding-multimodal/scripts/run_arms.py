@@ -60,7 +60,19 @@ TRAIN_VAL_TEST_FRACTIONS = (0.85, 0.15, 0.0)
 
 MAX_EPOCHS = 200
 LEARNING_RATE = 1e-3
-EMBED_BATCH_SIZE = 16
+
+# Re-tuned after length-bucketed batching landed (issue #3). Bigger is not better
+# here: on MPS the binding constraint is the attention matrix, not utilisation, and
+# batch 64 drove the machine into swap and had to be abandoned. Between 8 and 16 the
+# medians are close (37.4s vs 39.2s per 300 proteins), but 8 repeated within 0.3s
+# while 16 spread over 14s, and 8 halves peak memory. Predictable wins.
+# Batching does not change the vectors, so this is not part of the cache key.
+EMBED_BATCH_SIZE = 8
+
+# The text encoder is small and its inputs are short, so it is not under the same
+# memory pressure and keeps the batch size it was already using.
+TEXT_BATCH_SIZE = 64
+
 SEEDS = (0, 1, 2)
 
 log = get_logger("run-arms")
@@ -133,7 +145,7 @@ def build_feature_blocks(table: pd.DataFrame, cache_dir: Path) -> dict[str, np.n
         table["function_text"].fillna("").tolist(),
         DEFAULT_SENTENCE_ENCODER,
         cache_dir / "text_free_minilm.npz",
-        EMBED_BATCH_SIZE * 4,
+        TEXT_BATCH_SIZE,
     )
 
     log.info("embedding structured annotation text")
@@ -141,7 +153,7 @@ def build_feature_blocks(table: pd.DataFrame, cache_dir: Path) -> dict[str, np.n
         structured_text(table),
         DEFAULT_SENTENCE_ENCODER,
         cache_dir / "text_structured_minilm.npz",
-        EMBED_BATCH_SIZE * 4,
+        TEXT_BATCH_SIZE,
     )
 
     blocks = {
@@ -343,6 +355,14 @@ def main() -> int:
             table = load_table(
                 args.data_root / "processed" / "deeploc_annotated.parquet"
             )
+
+        # Batch sizes do not change the vectors, so they are deliberately absent
+        # from the cache key, but they do change how long the run takes. Recording
+        # them keeps a wall-clock comparison between two manifests honest: without
+        # this, a run that changed both the code and the batch size looks from the
+        # artifacts like a run that changed only the code.
+        run.record("embed_batch_size", EMBED_BATCH_SIZE)
+        run.record("text_batch_size", TEXT_BATCH_SIZE)
 
         with run.step("build feature blocks"):
             blocks = build_feature_blocks(
