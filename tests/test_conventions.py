@@ -32,9 +32,17 @@ EXPECTED_FUNCTIONS = {
         "embed_texts",
         "cached_text_embeddings",
     },
-    "biotp.evaluation": {"grouped_split", "spearman", "classification_metrics"},
+    "biotp.evaluation": {
+        "grouped_split",
+        "spearman",
+        "classification_metrics",
+        # Added for the localization writeup: a per-class breakdown and the
+        # majority-class floor any arm has to clear.
+        "per_class_f1",
+        "majority_class_accuracy",
+    },
     "biotp.release": {"build_model_card", "push_to_hub"},
-    "biotp.training": {"build_head", "train"},
+    "biotp.training": {"build_head", "train", "predict"},
 }
 
 
