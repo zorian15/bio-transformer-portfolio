@@ -22,7 +22,16 @@ from biotp import embeddings, evaluation, release, training
 STUB_MODULES = [embeddings, evaluation, release, training]
 
 EXPECTED_FUNCTIONS = {
-    "biotp.embeddings": {"load_esm2", "embed_sequences", "cached_embeddings"},
+    "biotp.embeddings": {
+        "load_esm2",
+        "embed_sequences",
+        "cached_embeddings",
+        # The text arms of grounding-multimodal need a second encoder under the
+        # same cache contract; see PLANNING.md and issue #1.
+        "load_sentence_encoder",
+        "embed_texts",
+        "cached_text_embeddings",
+    },
     "biotp.evaluation": {"grouped_split", "spearman", "classification_metrics"},
     "biotp.release": {"build_model_card", "push_to_hub"},
     "biotp.training": {"build_head", "train"},
