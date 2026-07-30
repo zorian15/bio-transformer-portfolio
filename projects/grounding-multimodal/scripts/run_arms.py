@@ -419,8 +419,9 @@ def main() -> int:
                 )
 
         # A copy of the manifest beside the committed metrics, so a number in the
-        # writeup can be traced to the commit and device that produced it.
-        run.write_manifest(args.results_dir / f"run_manifest_{suffix}.json")
+        # writeup can be traced to the commit and device that produced it. Deferred
+        # to run exit so the copy records the final status rather than "running".
+        run.also_write_manifest_to(args.results_dir / f"run_manifest_{suffix}.json")
         log.info("results written to %s", args.results_dir)
         log.info("\n%s", markdown)
 

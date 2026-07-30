@@ -167,7 +167,18 @@ class RunLog:
     steps: list[dict[str, Any]] = field(default_factory=list)
     status: str = "running"
     error: dict[str, str] | None = None
+    extra_manifest_paths: list[Path] = field(default_factory=list)
     _start_monotonic: float = field(default_factory=time.monotonic)
+
+    def also_write_manifest_to(self, path: Path) -> None:
+        """Request an extra manifest copy, written when the run ends.
+
+        Use this rather than calling write_manifest inside the run body: a copy
+        written mid-run is stamped `status: running`, which is misleading sitting
+        next to committed results that did in fact complete. Deferring to exit
+        means the copy records the real outcome, failures included.
+        """
+        self.extra_manifest_paths.append(path)
 
     def record(self, key: str, value: Any) -> None:
         """Attach a fact to the manifest, and log it.
@@ -293,18 +304,22 @@ def run_context(
     )
     logger.info("log file: %s", log_path)
 
+    def flush_manifests() -> None:
+        """Write the primary manifest and every requested copy, with final status."""
+        for path in [manifest_path, *run.extra_manifest_paths]:
+            run.write_manifest(path)
+            logger.info("manifest: %s", path)
+
     try:
         yield run
     except BaseException as error:
         run.status = "failed"
         run.error = {"type": type(error).__name__, "message": str(error)[:500]}
-        run.write_manifest(manifest_path)
+        flush_manifests()
         logger.exception("run %r failed", name)
-        logger.info("manifest: %s", manifest_path)
         raise
     run.status = "completed"
-    run.write_manifest(manifest_path)
     logger.info(
         "run %r completed in %.1fs", name, time.monotonic() - run._start_monotonic
     )
-    logger.info("manifest: %s", manifest_path)
+    flush_manifests()

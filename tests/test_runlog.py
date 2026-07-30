@@ -185,6 +185,34 @@ def test_manifest_is_json_serializable_with_numpy_records(tmp_path: Path) -> Non
     assert manifest["records"]["counts"]["Nucleus"] == 4043
 
 
+def test_extra_manifest_copy_records_the_final_status(tmp_path: Path) -> None:
+    """A copy beside committed results must say completed, not running.
+
+    Writing it inside the run body stamped `status: running`, which read as an
+    unfinished run sitting next to metrics that had in fact completed.
+    """
+    target = tmp_path / "results" / "run_manifest.json"
+    with runlog.run_context("unit-test", log_dir=tmp_path / "logs") as run:
+        run.also_write_manifest_to(target)
+        run.record("macro_f1", 0.41)
+
+    copied = json.loads(target.read_text())
+    assert copied["status"] == "completed"
+    assert copied["records"]["macro_f1"] == 0.41
+
+
+def test_extra_manifest_copy_is_written_on_failure_too(tmp_path: Path) -> None:
+    target = tmp_path / "results" / "run_manifest.json"
+    with (
+        pytest.raises(RuntimeError),
+        runlog.run_context("unit-test", log_dir=tmp_path / "logs") as run,
+    ):
+        run.also_write_manifest_to(target)
+        raise RuntimeError("late failure")
+
+    assert json.loads(target.read_text())["status"] == "failed"
+
+
 def test_write_manifest_to_an_explicit_path(tmp_path: Path) -> None:
     """Used to drop provenance beside committed metrics."""
     target = tmp_path / "results" / "run_manifest.json"
