@@ -9,4 +9,8 @@ Does grounding a protein-sequence representation in text (functional annotations
 - **Deliverable:** repo + weights + a writeup whose headline is the honest answer, including a clean null result if that is what happens.
 - **Main risk:** text leakage (annotations encode the label). Make controls the spine of the analysis.
 
+## Writeup
+- [Introduction](../../docs/grounding-multimodal/introduction.md): the question, biological and ML framing, objectives, evaluation criteria.
+- [Data](../../docs/grounding-multimodal/data.md): inputs, labels, provenance, preprocessing decisions, splits.
+
 See `../../PLANNING.md` for full context. Log runs in `DECISION_LOG.md`.
