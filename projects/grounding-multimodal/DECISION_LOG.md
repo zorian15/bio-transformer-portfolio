@@ -19,7 +19,7 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 - **Question / hypothesis:** does adding text to a frozen sequence representation improve localization over sequence-only, and does the gain survive controls that rule out label leakage? Issue #1.
 - **Setup:** DeepLoc 1.0, 13,858 single-label proteins, 10 classes. Frozen ESM-2 `esm2_t12_35M_UR50D` (480-d) and `all-MiniLM-L6-v2` (384-d), concatenated into a 256-unit MLP head, `linear_probe` mode, lr 1e-3, max 200 epochs with patience 10 and best-val-epoch restore. Test is DeepLoc's homology-partitioned split (2,773 proteins), never used for selection. 3 seeds. Provenance: `results/run_manifest_all.json`.
-- **Result:** macro-F1 on the held-out test set, mean over seeds, majority floor 0.291.
+- **Result:** macro-F1 on the held-out test set, mean over seeds, majority floor 0.291 **on the test split** (2,773 proteins). Not to be confused with the 0.292 recorded on 2026-07-29, which is the floor across the whole 13,858-protein dataset; the two are different quantities that happen to land a thousandth apart. The annotated-only test cohort has a different floor again, 0.305.
 
   | Arm | Macro-F1 | vs sequence-only |
   |---|---:|---:|
