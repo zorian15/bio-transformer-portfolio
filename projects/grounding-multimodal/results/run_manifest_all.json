@@ -1,5 +1,5 @@
 {
-  "duration_seconds": 6230.916,
+  "duration_seconds": 1380.725,
   "environment": {
     "device": "mps",
     "machine": "arm64",
@@ -17,11 +17,11 @@
     "python": "3.11.15"
   },
   "git": {
-    "branch": "1-grounding-multimodal-mvp",
-    "commit": "17004ce4dbd947cbf2afa4685edff24b508c5752",
+    "branch": "3-speed-up-embed-sequences",
+    "commit": "26ee7bca6b3f383adb6db7200ae1e6f2307df171",
     "dirty": true
   },
-  "log_file": "logs/run-arms-20260730T015215Z.log",
+  "log_file": "logs/run-arms-20260730T215505Z.log",
   "params": {
     "annotated_only": false,
     "data_root": "data",
@@ -46,27 +46,27 @@
     "proteins": 13858,
     "result_sequence+free-text": {
       "accuracy": 0.8353,
-      "accuracy_sd": 0.0077,
-      "macro_f1": 0.7401,
-      "macro_f1_sd": 0.007
+      "accuracy_sd": 0.007,
+      "macro_f1": 0.74,
+      "macro_f1_sd": 0.0064
     },
     "result_sequence+structured": {
-      "accuracy": 0.9395,
+      "accuracy": 0.9394,
       "accuracy_sd": 0.001,
-      "macro_f1": 0.9063,
-      "macro_f1_sd": 0.0056
+      "macro_f1": 0.9062,
+      "macro_f1_sd": 0.0053
     },
     "result_sequence-only": {
-      "accuracy": 0.7566,
-      "accuracy_sd": 0.0035,
-      "macro_f1": 0.6171,
-      "macro_f1_sd": 0.0076
+      "accuracy": 0.755,
+      "accuracy_sd": 0.0043,
+      "macro_f1": 0.6157,
+      "macro_f1_sd": 0.0043
     },
     "result_shuffled-text-control": {
-      "accuracy": 0.7369,
-      "accuracy_sd": 0.0031,
-      "macro_f1": 0.5834,
-      "macro_f1_sd": 0.0025
+      "accuracy": 0.7371,
+      "accuracy_sd": 0.0016,
+      "macro_f1": 0.5779,
+      "macro_f1_sd": 0.006
     },
     "result_text-only-free": {
       "accuracy": 0.6897,
@@ -97,91 +97,91 @@
     }
   },
   "run": "run-arms",
-  "started_at": "2026-07-30T01:52:15+00:00",
+  "started_at": "2026-07-30T21:55:05+00:00",
   "status": "completed",
   "steps": [
     {
-      "duration_seconds": 0.035,
+      "duration_seconds": 0.067,
       "name": "load prepared table"
     },
     {
-      "duration_seconds": 6169.557,
+      "duration_seconds": 1337.627,
       "name": "build feature blocks"
     },
     {
-      "duration_seconds": 5.458,
+      "duration_seconds": 1.66,
       "name": "seed 0: sequence-only"
     },
     {
-      "duration_seconds": 4.818,
+      "duration_seconds": 2.243,
       "name": "seed 0: text-only-free"
     },
     {
-      "duration_seconds": 3.349,
+      "duration_seconds": 1.588,
       "name": "seed 0: text-only-structured"
     },
     {
-      "duration_seconds": 3.003,
+      "duration_seconds": 2.811,
       "name": "seed 0: sequence+free-text"
     },
     {
-      "duration_seconds": 2.204,
+      "duration_seconds": 3.277,
       "name": "seed 0: sequence+structured"
     },
     {
-      "duration_seconds": 2.945,
+      "duration_seconds": 2.19,
       "name": "seed 0: shuffled-text-control"
     },
     {
-      "duration_seconds": 3.832,
+      "duration_seconds": 2.072,
       "name": "seed 1: sequence-only"
     },
     {
-      "duration_seconds": 4.649,
+      "duration_seconds": 2.168,
       "name": "seed 1: text-only-free"
     },
     {
-      "duration_seconds": 3.781,
+      "duration_seconds": 1.94,
       "name": "seed 1: text-only-structured"
     },
     {
-      "duration_seconds": 2.57,
+      "duration_seconds": 2.686,
       "name": "seed 1: sequence+free-text"
     },
     {
-      "duration_seconds": 3.201,
+      "duration_seconds": 3.135,
       "name": "seed 1: sequence+structured"
     },
     {
-      "duration_seconds": 2.959,
+      "duration_seconds": 2.56,
       "name": "seed 1: shuffled-text-control"
     },
     {
-      "duration_seconds": 1.59,
+      "duration_seconds": 1.725,
       "name": "seed 2: sequence-only"
     },
     {
-      "duration_seconds": 3.05,
+      "duration_seconds": 1.619,
       "name": "seed 2: text-only-free"
     },
     {
-      "duration_seconds": 3.979,
+      "duration_seconds": 1.86,
       "name": "seed 2: text-only-structured"
     },
     {
-      "duration_seconds": 2.513,
+      "duration_seconds": 2.445,
       "name": "seed 2: sequence+free-text"
     },
     {
-      "duration_seconds": 3.4,
+      "duration_seconds": 3.479,
       "name": "seed 2: sequence+structured"
     },
     {
-      "duration_seconds": 3.455,
+      "duration_seconds": 3.124,
       "name": "seed 2: shuffled-text-control"
     },
     {
-      "duration_seconds": 0.004,
+      "duration_seconds": 0.003,
       "name": "write results"
     }
   ]

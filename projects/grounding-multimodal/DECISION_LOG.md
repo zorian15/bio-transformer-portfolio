@@ -15,6 +15,56 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-07-30: embedding is 4.8x faster, and it was all padding
+
+- **Question / hypothesis:** embedding 13,858 proteins took 100 minutes at 2.3 seq/s, which dominated the pipeline and would have made the 150M and 650M checkpoints in `PLANNING.md` impractical. Issue #3 proposed three causes: padding waste from unsorted batching, per-sequence device synchronisation, and too small a batch size. Which of them actually costs the time?
+- **Setup:** ESM-2 `esm2_t12_35M_UR50D` on Apple MPS, the same 13,858 single-label proteins. Harness: `scripts/benchmark_embeddings.py`, in three modes (phase profile, alternating A/B, throughput). Fast loop is a 1,000-protein sample drawn proportionally per length decile, seed 0, so it matches the full length distribution (sample mean 473.7 against 473.9, median 421 against 421) rather than being an easier subset. Authoritative measure is the `build feature blocks` step in `results/run_manifest_all.json`, before and after.
+- **Result:** 4.79x on the sequence-embedding step, and the answer to "which cause" is essentially "one of them".
+
+  **Profile first, before changing anything.** With device syncs separating the phases:
+
+  | phase | seconds (200 proteins) | share |
+  |---|---:|---:|
+  | tokenize | 0.42 | 0.6% |
+  | forward | 71.08 | 99.3% |
+  | pool and transfer | 0.08 | 0.1% |
+
+  So candidate 2, per-sequence device synchronisation, was never a real cost: 16 transfers per batch total 0.08s. The hypothesis mistook an accounting artifact for a bottleneck, because an un-synced forward pass hides inside whichever later line first touches its result, which was the `.cpu()` call. Pooling was still vectorised, since it is a few lines and its share grows as the forward gets cheaper, but it is honestly worth ~0.1% here and no more.
+
+  **Padding was the whole story**, because it lives inside the forward pass. At `batch_size=16` over the full cohort, dataset-order batching pushed 13,237,858 padded residue slots through the model against 6,567,584 actual residues, a 2.01x waste, and 3.04x the necessary attention cost. Length-bucketed batching brought padded slots to 6,571,040, which is 1.0005x the data itself.
+
+  **Authoritative comparison**, both runs on MPS with the same checkpoint and cohort, manifests in `results/`:
+
+  | | before | after | speedup |
+  |---|---:|---:|---:|
+  | sequence embedding | 6,024.2s (2.30 seq/s) | 1,256.6s (11.03 seq/s) | **4.79x** |
+  | build feature blocks | 6,169.6s | 1,337.6s | 4.61x |
+  | full run, 18 arm-seed fits included | 6,230.9s | 1,380.7s | 4.51x |
+
+  Projected 650M wall time, at the parameter-count ratio and assuming the pipeline stays compute-bound: about 30 hours before, about 6.3 hours after. That is the number that decides whether the larger checkpoints are reachable on this hardware, and it moves from "no" to "overnight".
+
+  **The results are unchanged, which is the point.** The v2 vectors are not bit-identical to v1's, so every arm was re-fit:
+
+  | Arm | Macro-F1 before | Macro-F1 after |
+  |---|---:|---:|
+  | sequence-only | 0.617 ± 0.008 | 0.616 ± 0.004 |
+  | text-only, free text | 0.617 ± 0.015 | 0.617 ± 0.015 |
+  | text-only, structured | 0.912 ± 0.001 | 0.912 ± 0.001 |
+  | sequence + free text | **0.740 ± 0.007** | **0.740 ± 0.006** |
+  | sequence + structured | 0.906 ± 0.006 | 0.906 ± 0.005 |
+  | shuffled-text control | 0.583 ± 0.003 | 0.578 ± 0.006 |
+
+  The headline +0.123 gain reproduces to three decimals, and the control still lands below sequence-only. Nothing in the 2026-07-30 entry above needs revising.
+
+- **Two things worth recording, because both cost time to learn:**
+  - **Bigger batches are worse here, not better.** Candidate 3 was backwards. `batch_size=64` had to be abandoned after 12 minutes on 1,000 proteins, against 84 seconds at 16, and it drove the machine to 8.3 GB of 9.2 GB swap. On MPS the binding constraint is the attention matrix, not device utilisation: a batch of 64 at 1022 positions materialises roughly 5 GB of attention. Settled on 8, where the medians beat 16 slightly (37.4s against 39.2s per 300 proteins) and, more importantly, three repeats fell within 0.3s of each other while 16 spread over 14s.
+  - **Single-shot before/after timing on a laptop is not a measurement.** An identical configuration came out 3.7x apart (83.8s and 306.7s) either side of the run that exhausted swap. The fix was `--mode ab`, which runs the old and new implementations alternately in one process and takes the median, so drift hits both arms. Under alternation the 300-protein speedup is 3.38x at batch 16; the full run reaches 4.79x because bucketing works better the larger the pool, with 13,858 proteins leaving essentially no padding at all. The A/B also asserts the two implementations agree numerically, so a "speedup" that changed the answers would fail rather than be reported.
+- **Decision / next step:**
+  - Take the 4.79x, and treat the 650M checkpoint as reachable on this hardware.
+  - `EMBEDDING_IMPL_VERSION` is 2. Every cache invalidated automatically and recomputed, which is exactly what #4 was built for: the "after" run would otherwise have hit the cache and reported a speedup that measured nothing. `docs/embedding-cache.md` records v2 as the worked example.
+  - Correctness is anchored, not assumed: `tests/data/reference_embeddings.npz` holds 24 vectors written by the v1 code before the rewrite, and the v2 code still reproduces them within float32 tolerance.
+  - Not done, and deliberately: the per-modality cache version. One `EMBEDDING_IMPL_VERSION` covers both encoders, so this sequence-side change also invalidated the text caches, costing 72 seconds of needless recompute. Splitting it would save that and add a second constant for a human to remember. Over-invalidation is the safe direction, so it stays as is.
+
 ### 2026-07-30: MVP six-arm result. Free text helps, and the control holds
 
 - **Question / hypothesis:** does adding text to a frozen sequence representation improve localization over sequence-only, and does the gain survive controls that rule out label leakage? Issue #1.
