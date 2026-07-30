@@ -31,6 +31,10 @@ EXPECTED_FUNCTIONS = {
         "load_sentence_encoder",
         "embed_texts",
         "cached_text_embeddings",
+        # The cache key covers the embedding code, not only its inputs; these
+        # build the code half of the key. See issue #4 and docs/embedding-cache.md.
+        "sequence_embedding_spec",
+        "text_embedding_spec",
     },
     "biotp.evaluation": {
         "grouped_split",

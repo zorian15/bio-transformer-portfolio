@@ -13,6 +13,7 @@ UniProt annotation text.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,10 +36,61 @@ DEFAULT_SENTENCE_ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
 
 CACHE_KEY_FIELD = "cache_key"
 EMBEDDINGS_FIELD = "embeddings"
+SPEC_FIELD = "spec"
 
 # How often the sequence loop reports progress. Tuned so a multi-minute run says
 # something every few seconds without flooding the log.
 PROGRESS_EVERY_N_BATCHES = 25
+
+# Bump when a change alters the numerical output of embedding but is not visible
+# in one of the named spec fields below: a different pooling rule, a different
+# normalization, a bug fix that moves the vectors. Forgetting to bump means every
+# existing cache silently keeps serving vectors from the old implementation.
+#
+# Two safeguards, because this is the one part of the cache key that relies on a
+# human noticing. `test_cache_key_is_stable_for_the_recorded_spec` pins the exact
+# key for a fixed spec, so any change here fails a test rather than passing
+# quietly, and CLAUDE.md carries the review convention.
+EMBEDDING_IMPL_VERSION = 1
+
+
+def sequence_embedding_spec(model_name: str) -> dict[str, Any]:
+    """Everything about the sequence path that changes the resulting vectors.
+
+    This is the cache key's semantic half. A field belongs here if changing it
+    changes the output; `batch_size` is deliberately absent because batching is a
+    throughput knob that provably does not (see the batch-invariance test), and
+    including it would force needless recomputation.
+
+    `repr_layer_policy` records the rule rather than the layer number, since the
+    number is determined by the checkpoint and would require loading the model to
+    read, which would defeat the point of checking the cache first.
+    """
+    return {
+        "kind": "esm2_sequence",
+        "impl_version": EMBEDDING_IMPL_VERSION,
+        "model_name": model_name,
+        "max_sequence_length": MAX_SEQUENCE_LENGTH,
+        "repr_layer_policy": "final",
+        "pooling": "mean_over_residues_excluding_special_tokens",
+        "dtype": "float32",
+    }
+
+
+def text_embedding_spec(model_name: str) -> dict[str, Any]:
+    """Everything about the text path that changes the resulting vectors.
+
+    `empty_text` is a genuine semantic choice, not an implementation detail: empty
+    annotations map to a zero vector rather than an encoding of the empty string,
+    so changing that rule changes the vectors for every un-annotated protein.
+    """
+    return {
+        "kind": "sentence_text",
+        "impl_version": EMBEDDING_IMPL_VERSION,
+        "model_name": model_name,
+        "empty_text": "zero_vector",
+        "dtype": "float32",
+    }
 
 
 @dataclass(frozen=True)
@@ -221,10 +273,17 @@ def embed_texts(model: Any, texts: list[str], batch_size: int) -> np.ndarray:
     return out
 
 
-def _cache_key(items: list[str], model_name: str) -> str:
-    """Hash the inputs and the model together, so neither can change unnoticed."""
+def _cache_key(items: list[str], spec: dict[str, Any]) -> str:
+    """Hash the inputs together with everything about the code that shapes them.
+
+    Hashing the inputs alone would be enough if the transformation never changed,
+    since embedding is a pure function of (items, model). It does change, and then
+    the same inputs legitimately produce different vectors while an inputs-only key
+    stays identical, so the cache serves the previous implementation's answer with
+    no warning. Folding the spec in makes that impossible.
+    """
     digest = hashlib.sha256()
-    digest.update(model_name.encode())
+    digest.update(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode())
     digest.update(str(len(items)).encode())
     for item in items:
         digest.update(b"\x00")
@@ -232,7 +291,29 @@ def _cache_key(items: list[str], model_name: str) -> str:
     return digest.hexdigest()
 
 
-def _load_if_key_matches(cache_path: Path, expected_key: str) -> np.ndarray | None:
+def _describe_cache_miss(
+    stored_spec: dict[str, Any] | None, spec: dict[str, Any]
+) -> str:
+    """Explain why a cache was rejected, so a recompute is never mysterious."""
+    if stored_spec is None:
+        return "cache predates spec tracking"
+
+    changed = [
+        f"{field}: {stored_spec.get(field, '<absent>')!r} -> {value!r}"
+        for field, value in sorted(spec.items())
+        if stored_spec.get(field) != value
+    ]
+    dropped = sorted(set(stored_spec) - set(spec))
+    if dropped:
+        changed.append(f"fields removed: {dropped}")
+    if not changed:
+        return "same spec, so the inputs themselves changed"
+    return "; ".join(changed)
+
+
+def _load_if_key_matches(
+    cache_path: Path, expected_key: str, spec: dict[str, Any]
+) -> np.ndarray | None:
     """Return cached embeddings when the stored key matches, else None."""
     if not cache_path.exists():
         return None
@@ -240,20 +321,32 @@ def _load_if_key_matches(cache_path: Path, expected_key: str) -> np.ndarray | No
     log = get_logger("embeddings")
     with np.load(cache_path, allow_pickle=False) as payload:
         stored_key = str(payload[CACHE_KEY_FIELD])
-        if stored_key != expected_key:
-            log.info("cache key changed, recomputing %s", cache_path)
-            return None
-        embeddings = np.asarray(payload[EMBEDDINGS_FIELD])
-        log.info("cache hit: %s %s", cache_path, embeddings.shape)
-        return embeddings
+        if stored_key == expected_key:
+            embeddings = np.asarray(payload[EMBEDDINGS_FIELD])
+            log.info("cache hit: %s %s", cache_path, embeddings.shape)
+            return embeddings
+
+        stored_spec = (
+            json.loads(str(payload[SPEC_FIELD])) if SPEC_FIELD in payload else None
+        )
+        log.info(
+            "cache miss, recomputing %s (%s)",
+            cache_path,
+            _describe_cache_miss(stored_spec, spec),
+        )
+        return None
 
 
-def _write_cache(cache_path: Path, embeddings: np.ndarray, cache_key: str) -> None:
+def _write_cache(
+    cache_path: Path, embeddings: np.ndarray, cache_key: str, spec: dict[str, Any]
+) -> None:
+    """Write vectors plus the spec that produced them, so the file self-describes."""
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    # Annotated as Any because savez types **kwds as array-like, and the key is a str.
+    # Annotated as Any because savez types **kwds as array-like, and two are strings.
     payload: dict[str, Any] = {
         EMBEDDINGS_FIELD: embeddings,
         CACHE_KEY_FIELD: cache_key,
+        SPEC_FIELD: json.dumps(spec, sort_keys=True, separators=(",", ":")),
     }
     np.savez(cache_path, **payload)
 
@@ -263,17 +356,20 @@ def cached_embeddings(
 ) -> np.ndarray:
     """Load embeddings from cache_path, or compute and cache them if absent.
 
-    The cache key covers both the sequences and model_name, so a changed model or
-    a changed input set recomputes rather than silently returning stale vectors.
+    The cache key covers the sequences, the model name, and every parameter of the
+    embedding code that changes the output (see `sequence_embedding_spec`), so
+    neither a changed input set nor a changed implementation can silently return
+    stale vectors. `batch_size` is excluded on purpose: it does not affect output.
     """
-    cache_key = _cache_key(sequences, model_name)
-    cached = _load_if_key_matches(cache_path, cache_key)
+    spec = sequence_embedding_spec(model_name)
+    cache_key = _cache_key(sequences, spec)
+    cached = _load_if_key_matches(cache_path, cache_key, spec)
     if cached is not None:
         return cached
 
     model = load_esm2(model_name)
     embeddings = embed_sequences(model, sequences, batch_size)
-    _write_cache(cache_path, embeddings, cache_key)
+    _write_cache(cache_path, embeddings, cache_key, spec)
     return embeddings
 
 
@@ -281,12 +377,13 @@ def cached_text_embeddings(
     texts: list[str], model_name: str, cache_path: Path, batch_size: int
 ) -> np.ndarray:
     """Text-arm counterpart to cached_embeddings, under the same cache contract."""
-    cache_key = _cache_key(texts, model_name)
-    cached = _load_if_key_matches(cache_path, cache_key)
+    spec = text_embedding_spec(model_name)
+    cache_key = _cache_key(texts, spec)
+    cached = _load_if_key_matches(cache_path, cache_key, spec)
     if cached is not None:
         return cached
 
     model = load_sentence_encoder(model_name)
     embeddings = embed_texts(model, texts, batch_size)
-    _write_cache(cache_path, embeddings, cache_key)
+    _write_cache(cache_path, embeddings, cache_key, spec)
     return embeddings
