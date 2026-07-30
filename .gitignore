@@ -35,3 +35,7 @@ runs/
 
 # OS
 .DS_Store
+
+# Run logs and manifests (regenerable; provenance for committed metrics is
+# copied into each project results/ dir)
+logs/

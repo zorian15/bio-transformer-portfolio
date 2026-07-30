@@ -6,6 +6,11 @@ they stay honest about what is settled and what is still open.
 Publishing to GitHub Pages (`gh-pages`) is planned but not set up yet; for now
 these are plain Markdown files read in the repo. See `PLANNING.md`.
 
+## Shared infrastructure
+
+- [Run logging](run-logging.md): how pipeline runs are logged, and the manifest
+  each one writes for provenance.
+
 ## Project 1: grounding-multimodal
 
 - [Introduction](grounding-multimodal/introduction.md): the question, why it is

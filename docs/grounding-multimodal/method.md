@@ -153,3 +153,9 @@ The second invocation restricts to the 91.1% of proteins that have free-text
 function annotation, which is the other half of the comparability question raised
 in [data.md](data.md). It subsets after embedding, so it reuses the same cached
 vectors rather than recomputing them.
+
+Both scripts log to `logs/` and write a run manifest recording the git commit,
+device, package versions, per-step timings, and the counts and metrics they
+produced. The runner also copies its manifest into `results/`, so a committed
+number can be traced to the run that produced it. See
+[run-logging.md](../run-logging.md).

@@ -38,6 +38,7 @@ from biotp.evaluation import (
     majority_class_accuracy,
     per_class_f1,
 )
+from biotp.runlog import DEFAULT_LOG_DIR, get_logger, run_context
 from biotp.training import build_head, predict, train
 from biotp.utils import set_seed
 
@@ -61,6 +62,8 @@ MAX_EPOCHS = 200
 LEARNING_RATE = 1e-3
 EMBED_BATCH_SIZE = 16
 SEEDS = (0, 1, 2)
+
+log = get_logger("run-arms")
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,7 @@ def build_feature_blocks(table: pd.DataFrame, cache_dir: Path) -> dict[str, np.n
     """Compute (or load) one embedding matrix per modality, aligned to table rows."""
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"embedding {len(table)} sequences with {SEQUENCE_ENCODER}")
+    log.info(f"embedding {len(table)} sequences with {SEQUENCE_ENCODER}")
     sequence = cached_embeddings(
         table["sequence"].tolist(),
         SEQUENCE_ENCODER,
@@ -125,7 +128,7 @@ def build_feature_blocks(table: pd.DataFrame, cache_dir: Path) -> dict[str, np.n
         EMBED_BATCH_SIZE,
     )
 
-    print(f"embedding free text with {DEFAULT_SENTENCE_ENCODER}")
+    log.info(f"embedding free text with {DEFAULT_SENTENCE_ENCODER}")
     text_free = cached_text_embeddings(
         table["function_text"].fillna("").tolist(),
         DEFAULT_SENTENCE_ENCODER,
@@ -133,7 +136,7 @@ def build_feature_blocks(table: pd.DataFrame, cache_dir: Path) -> dict[str, np.n
         EMBED_BATCH_SIZE * 4,
     )
 
-    print("embedding structured annotation text")
+    log.info("embedding structured annotation text")
     text_structured = cached_text_embeddings(
         structured_text(table),
         DEFAULT_SENTENCE_ENCODER,
@@ -148,7 +151,7 @@ def build_feature_blocks(table: pd.DataFrame, cache_dir: Path) -> dict[str, np.n
     }
     for name, block in blocks.items():
         assert len(block) == len(table), f"{name} embeddings misaligned with table"
-        print(f"  {name:16} {block.shape}")
+        log.info(f"  {name:16} {block.shape}")
     return blocks
 
 
@@ -327,64 +330,100 @@ def main() -> int:
         action="store_true",
         help="restrict to proteins that have free-text function annotation",
     )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=DEFAULT_LOG_DIR,
+        help=f"where the run log and manifest go (default: {DEFAULT_LOG_DIR})",
+    )
     args = parser.parse_args()
 
-    table = load_table(args.data_root / "processed" / "deeploc_annotated.parquet")
-    blocks = build_feature_blocks(table, args.data_root / "processed" / "embeddings")
-
-    cohort = "all proteins"
-    if args.annotated_only:
-        # Subset after embedding, so the cached vectors are shared with the full run.
-        keep = table.index[table["has_function_text"]].to_numpy()
-        table = table.loc[keep].reset_index(drop=True)
-        blocks = {name: block[keep] for name, block in blocks.items()}
-        cohort = "annotated subset"
-    print(f"\ncohort: {cohort}, {len(table)} proteins")
-
-    class_names = sorted(table["localization"].unique())
-    label_index = {name: index for index, name in enumerate(class_names)}
-    labels = table["localization"].map(label_index).to_numpy()
-
-    runs: list[dict[str, Any]] = []
-    for seed in SEEDS:
-        indices = split_indices(table, seed)
-        sizes = {split: len(rows) for split, rows in indices.items()}
-        print(f"\nseed {seed}: {sizes}")
-        for arm in ARMS:
-            result = run_arm(arm, blocks, indices, labels, class_names, seed)
-            runs.append(result)
-            print(
-                f"  {arm.name:24} acc={result['accuracy']:.3f} "
-                f"macroF1={result['macro_f1']:.3f} "
-                f"(best epoch {result['best_epoch']}/{result['epochs_run']})"
+    with run_context("run-arms", log_dir=args.log_dir, params=vars(args)) as run:
+        with run.step("load prepared table"):
+            table = load_table(
+                args.data_root / "processed" / "deeploc_annotated.parquet"
             )
 
-    test_labels = [
-        class_names[index] for index in labels[split_indices(table, 0)["test"]]
-    ]
-    majority = majority_class_accuracy(test_labels)
-    summary = summarize(runs)
+        with run.step("build feature blocks"):
+            blocks = build_feature_blocks(
+                table, args.data_root / "processed" / "embeddings"
+            )
 
-    args.results_dir.mkdir(parents=True, exist_ok=True)
-    suffix = "annotated" if args.annotated_only else "all"
-    summary.to_csv(args.results_dir / f"arms_{suffix}.csv", index=False)
-    markdown = render_markdown(summary, majority, cohort, len(test_labels))
-    (args.results_dir / f"arms_{suffix}.md").write_text(markdown)
-    (args.results_dir / f"per_class_f1_{suffix}.json").write_text(
-        json.dumps(
-            {
-                run["arm"]: run["per_class_f1"]
-                for run in runs
-                if run["seed"] == SEEDS[0]
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
+        cohort = "all proteins"
+        if args.annotated_only:
+            # Subset after embedding, so cached vectors are shared with the full run.
+            keep = table.index[table["has_function_text"]].to_numpy()
+            table = table.loc[keep].reset_index(drop=True)
+            blocks = {name: block[keep] for name, block in blocks.items()}
+            cohort = "annotated subset"
+        run.record("cohort", cohort)
+        run.record("proteins", len(table))
 
-    print()
-    print(markdown)
-    print(f"wrote results to {args.results_dir}")
+        class_names = sorted(table["localization"].unique())
+        label_index = {name: index for index, name in enumerate(class_names)}
+        labels = table["localization"].map(label_index).to_numpy()
+        run.record("classes", class_names)
+
+        runs: list[dict[str, Any]] = []
+        for seed in SEEDS:
+            indices = split_indices(table, seed)
+            sizes = {split: len(rows) for split, rows in indices.items()}
+            run.record(f"split_sizes_seed_{seed}", sizes)
+
+            for arm in ARMS:
+                with run.step(f"seed {seed}: {arm.name}"):
+                    result = run_arm(arm, blocks, indices, labels, class_names, seed)
+                    runs.append(result)
+                    log.info(
+                        "%-24s acc=%.3f macroF1=%.3f (best epoch %d/%d)",
+                        arm.name,
+                        result["accuracy"],
+                        result["macro_f1"],
+                        result["best_epoch"],
+                        result["epochs_run"],
+                    )
+
+        test_labels = [
+            class_names[index] for index in labels[split_indices(table, 0)["test"]]
+        ]
+        majority = majority_class_accuracy(test_labels)
+        run.record("majority_class_accuracy", round(majority, 4))
+        summary = summarize(runs)
+
+        with run.step("write results"):
+            args.results_dir.mkdir(parents=True, exist_ok=True)
+            suffix = "annotated" if args.annotated_only else "all"
+            summary.to_csv(args.results_dir / f"arms_{suffix}.csv", index=False)
+            markdown = render_markdown(summary, majority, cohort, len(test_labels))
+            (args.results_dir / f"arms_{suffix}.md").write_text(markdown)
+            (args.results_dir / f"per_class_f1_{suffix}.json").write_text(
+                json.dumps(
+                    {
+                        result["arm"]: result["per_class_f1"]
+                        for result in runs
+                        if result["seed"] == SEEDS[0]
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            for _, row in summary.iterrows():
+                run.record(
+                    f"result_{row['arm']}",
+                    {
+                        "accuracy": round(row["accuracy"], 4),
+                        "accuracy_sd": round(row["accuracy_sd"], 4),
+                        "macro_f1": round(row["macro_f1"], 4),
+                        "macro_f1_sd": round(row["macro_f1_sd"], 4),
+                    },
+                )
+
+        # A copy of the manifest beside the committed metrics, so a number in the
+        # writeup can be traced to the commit and device that produced it.
+        run.write_manifest(args.results_dir / f"run_manifest_{suffix}.json")
+        log.info("results written to %s", args.results_dir)
+        log.info("\n%s", markdown)
+
     return 0
 
 

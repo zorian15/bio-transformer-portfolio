@@ -13,12 +13,14 @@ UniProt annotation text.
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from biotp.runlog import get_logger
 from biotp.utils import get_device
 
 # ESM-2 was trained with 1024 positions, two of which the BOS and EOS tokens
@@ -33,6 +35,10 @@ DEFAULT_SENTENCE_ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
 
 CACHE_KEY_FIELD = "cache_key"
 EMBEDDINGS_FIELD = "embeddings"
+
+# How often the sequence loop reports progress. Tuned so a multi-minute run says
+# something every few seconds without flooding the log.
+PROGRESS_EVERY_N_BATCHES = 25
 
 
 @dataclass(frozen=True)
@@ -113,8 +119,18 @@ def embed_sequences(
     assert all(truncated), "at least one sequence was empty"
 
     out = np.empty((len(truncated), model.embedding_dim), dtype=np.float32)
+    total_batches = (len(truncated) + batch_size - 1) // batch_size
+    log = get_logger("embeddings")
+    log.info(
+        "embedding %d sequences on %s in %d batches of %d",
+        len(truncated),
+        model.device,
+        total_batches,
+        batch_size,
+    )
+    started = time.monotonic()
 
-    for start in range(0, len(truncated), batch_size):
+    for batch_index, start in enumerate(range(0, len(truncated), batch_size)):
         batch = truncated[start : start + batch_size]
         _, _, tokens = model.batch_converter(
             [(str(index), sequence) for index, sequence in enumerate(batch)]
@@ -130,7 +146,27 @@ def embed_sequences(
             residues = representations[index, 1 : len(sequence) + 1]
             out[start + index] = residues.mean(dim=0).float().cpu().numpy()
 
+        # Periodic progress with an estimate, because this is the step that can run
+        # for tens of minutes and silence is indistinguishable from a hang.
+        done = batch_index + 1
+        if done % PROGRESS_EVERY_N_BATCHES == 0 or done == total_batches:
+            elapsed = time.monotonic() - started
+            rate = (start + len(batch)) / elapsed
+            remaining = (len(truncated) - start - len(batch)) / rate if rate else 0.0
+            log.info(
+                "  %d/%d batches, %d/%d sequences, %.1f seq/s, ~%.0fs remaining",
+                done,
+                total_batches,
+                start + len(batch),
+                len(truncated),
+                rate,
+                remaining,
+            )
+
     assert np.isfinite(out).all(), "ESM-2 produced non-finite embeddings"
+    log.info(
+        "embedded %d sequences in %.1fs", len(truncated), time.monotonic() - started
+    )
     return out
 
 
@@ -161,6 +197,15 @@ def embed_texts(model: Any, texts: list[str], batch_size: int) -> np.ndarray:
         width = int(model.get_sentence_embedding_dimension())
     out = np.zeros((len(texts), width), dtype=np.float32)
 
+    log = get_logger("embeddings")
+    log.info(
+        "embedding %d texts (%d non-empty, %d zero vectors)",
+        len(texts),
+        len(populated),
+        len(texts) - len(populated),
+    )
+    started = time.monotonic()
+
     if populated:
         encoded = model.encode(
             [text for _, text in populated],
@@ -172,6 +217,7 @@ def embed_texts(model: Any, texts: list[str], batch_size: int) -> np.ndarray:
             out[index] = encoded[row]
 
     assert np.isfinite(out).all(), "sentence encoder produced non-finite embeddings"
+    log.info("embedded %d texts in %.1fs", len(texts), time.monotonic() - started)
     return out
 
 
@@ -191,12 +237,15 @@ def _load_if_key_matches(cache_path: Path, expected_key: str) -> np.ndarray | No
     if not cache_path.exists():
         return None
 
+    log = get_logger("embeddings")
     with np.load(cache_path, allow_pickle=False) as payload:
         stored_key = str(payload[CACHE_KEY_FIELD])
         if stored_key != expected_key:
-            print(f"cache key changed, recomputing {cache_path}")
+            log.info("cache key changed, recomputing %s", cache_path)
             return None
-        return np.asarray(payload[EMBEDDINGS_FIELD])
+        embeddings = np.asarray(payload[EMBEDDINGS_FIELD])
+        log.info("cache hit: %s %s", cache_path, embeddings.shape)
+        return embeddings
 
 
 def _write_cache(cache_path: Path, embeddings: np.ndarray, cache_key: str) -> None:

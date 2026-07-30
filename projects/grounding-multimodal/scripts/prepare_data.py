@@ -28,6 +28,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from biotp.runlog import DEFAULT_LOG_DIR, RunLog, get_logger, run_context
+
 DEEPLOC_URL = (
     "https://services.healthtech.dtu.dk/services/DeepLoc-1.0/deeploc_data.fasta"
 )
@@ -87,6 +89,8 @@ UNIPROT_BATCH_SIZE = 100
 UNIPROT_MAX_RETRIES = 4
 UNIPROT_RETRY_BACKOFF_SECONDS = 2.0
 
+log = get_logger("prepare-data")
+
 
 @dataclass(frozen=True)
 class DeepLocRecord:
@@ -102,16 +106,16 @@ class DeepLocRecord:
 def download_deeploc(destination: Path, force: bool) -> Path:
     """Download the DeepLoc 1.0 FASTA, skipping the fetch if already present."""
     if destination.exists() and not force:
-        print(f"raw FASTA already present, reusing {destination}")
+        log.info(f"raw FASTA already present, reusing {destination}")
         return destination
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    print(f"downloading {DEEPLOC_URL}")
+    log.info(f"downloading {DEEPLOC_URL}")
     response = requests.get(DEEPLOC_URL, timeout=120)
     response.raise_for_status()
     assert response.content, "DeepLoc download returned an empty body"
     destination.write_bytes(response.content)
-    print(f"wrote {destination} ({destination.stat().st_size / 1e6:.1f} MB)")
+    log.info(f"wrote {destination} ({destination.stat().st_size / 1e6:.1f} MB)")
     return destination
 
 
@@ -242,7 +246,7 @@ def _request_uniprot_batch(accessions: list[str]) -> str:
                 ) from error
             last_error = error
             sleep_for = UNIPROT_RETRY_BACKOFF_SECONDS * (attempt + 1)
-            print(
+            log.info(
                 f"  transient failure ({_describe(error)}), retry in {sleep_for:.0f}s"
             )
             time.sleep(sleep_for)
@@ -281,7 +285,7 @@ def fetch_uniprot_annotations(accessions: list[str]) -> pd.DataFrame:
         frames.append(renamed[["accession", *ANNOTATION_COLUMNS]])
 
         if batch_index % 20 == 0 or batch_index == total_batches - 1:
-            print(
+            log.info(
                 f"  batch {batch_index + 1}/{total_batches}: "
                 f"requested {len(batch)}, received {len(frame)}"
             )
@@ -321,32 +325,36 @@ def build_table(
     return table
 
 
-def report(table: pd.DataFrame) -> None:
-    """Print the counts that decide whether this dataset is usable."""
+def report(table: pd.DataFrame, run: RunLog) -> None:
+    """Log the counts that decide whether this dataset is usable.
+
+    Every count also goes onto the run manifest via `run.record`, so a DECISION_LOG
+    entry can cite the numbers from a specific run rather than from memory.
+    """
     single = table[table["localization"] != DUAL_LOCALIZATION]
-    print("\n--- dataset summary ---")
-    print(f"proteins parsed:              {len(table)}")
-    print(f"dual-localization dropped:    {len(table) - len(single)}")
-    print(f"single-label proteins:        {len(single)}")
-    print(f"  official test split:        {int(single['is_test'].sum())}")
-    print(f"  train/val pool:             {int((~single['is_test']).sum())}")
-    print(f"localization classes:         {single['localization'].nunique()}")
-    print(
-        "isoforms using parent text:   "
-        f"{int(single['annotation_from_parent_entry'].sum())}"
+    run.record("proteins_parsed", len(table))
+    run.record("dual_localization_dropped", len(table) - len(single))
+    run.record("single_label_proteins", len(single))
+    run.record("test_split", int(single["is_test"].sum()))
+    run.record("train_val_pool", int((~single["is_test"]).sum()))
+    run.record("localization_classes", int(single["localization"].nunique()))
+    run.record(
+        "isoforms_using_parent_text",
+        int(single["annotation_from_parent_entry"].sum()),
     )
 
     for column in ("function_text", "go_cellular_component", "keywords"):
         non_empty = int((single[column].str.len() > 0).sum())
-        share = non_empty / len(single) * 100
-        print(f"non-empty {column:24} {non_empty:6} ({share:.1f}%)")
+        run.record(
+            f"non_empty_{column}",
+            {"count": non_empty, "share": round(non_empty / len(single), 4)},
+        )
 
-    print("\nclass balance (single-label):")
-    for name, count in single["localization"].value_counts().items():
-        print(f"  {name!s:24} {count:5} ({count / len(single) * 100:.1f}%)")
-
-    majority = single["localization"].value_counts().iloc[0] / len(single)
-    print(f"\nmajority-class accuracy floor: {majority:.3f}")
+    counts = single["localization"].value_counts()
+    run.record(
+        "class_counts", {str(name): int(count) for name, count in counts.items()}
+    )
+    run.record("majority_class_accuracy_floor", round(counts.iloc[0] / len(single), 4))
 
 
 def main() -> int:
@@ -367,32 +375,47 @@ def main() -> int:
         action="store_true",
         help="parse the FASTA only, without querying UniProt (for quick checks)",
     )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=DEFAULT_LOG_DIR,
+        help=f"where the run log and manifest go (default: {DEFAULT_LOG_DIR})",
+    )
     args = parser.parse_args()
 
     raw_fasta = args.data_root / "raw" / "deeploc_data.fasta"
     output_path = args.data_root / "processed" / "deeploc_annotated.parquet"
 
-    download_deeploc(raw_fasta, force=args.force_download)
-    records = parse_deeploc_fasta(raw_fasta.read_text())
-    print(f"parsed {len(records)} DeepLoc records")
+    with run_context("prepare-data", log_dir=args.log_dir, params=vars(args)) as run:
+        with run.step("download DeepLoc FASTA"):
+            download_deeploc(raw_fasta, force=args.force_download)
 
-    if args.skip_uniprot:
-        annotations = pd.DataFrame(
-            columns=list(ANNOTATION_COLUMNS), dtype=str
-        ).rename_axis("accession")
-    else:
-        print(f"fetching UniProt annotations in batches of {UNIPROT_BATCH_SIZE}")
-        annotations = fetch_uniprot_annotations(
-            [base_accession(record.accession) for record in records]
-        )
-        print(f"received annotations for {len(annotations)} entries")
+        with run.step("parse FASTA"):
+            records = parse_deeploc_fasta(raw_fasta.read_text())
+            log.info("parsed %d DeepLoc records", len(records))
 
-    table = build_table(records, annotations)
-    report(table)
+        if args.skip_uniprot:
+            log.warning("skipping UniProt: text columns will be empty")
+            annotations = pd.DataFrame(
+                columns=list(ANNOTATION_COLUMNS), dtype=str
+            ).rename_axis("accession")
+        else:
+            with run.step("fetch UniProt annotations"):
+                annotations = fetch_uniprot_annotations(
+                    [base_accession(record.accession) for record in records]
+                )
+                run.record("uniprot_entries_received", len(annotations))
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_parquet(output_path, index=False)
-    print(f"\nwrote {output_path} ({output_path.stat().st_size / 1e6:.1f} MB)")
+        with run.step("join and summarize"):
+            table = build_table(records, annotations)
+            report(table, run)
+
+        with run.step("write parquet"):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            table.to_parquet(output_path, index=False)
+            run.record("output_path", str(output_path))
+            run.record("output_mb", round(output_path.stat().st_size / 1e6, 1))
+
     return 0
 
 
