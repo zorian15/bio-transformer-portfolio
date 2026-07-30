@@ -10,6 +10,9 @@ these are plain Markdown files read in the repo. See `PLANNING.md`.
 
 - [Run logging](run-logging.md): how pipeline runs are logged, and the manifest
   each one writes for provenance.
+- [Embedding cache](embedding-cache.md): what invalidates a cached embedding, why
+  the key covers the code and not only the inputs, and the one part that still
+  needs a human.
 
 ## Project 1: grounding-multimodal
 

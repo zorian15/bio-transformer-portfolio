@@ -12,6 +12,7 @@ Signature-level tests pin design decisions that should outlive any rewrite.
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 from typing import Any
 
@@ -66,36 +67,40 @@ def test_truncation_limit_leaves_room_for_bos_and_eos() -> None:
     assert embeddings.MAX_SEQUENCE_LENGTH == 1022
 
 
+def spec_for(model_name: str = "model-a") -> dict:
+    return embeddings.sequence_embedding_spec(model_name)
+
+
 def test_cache_key_changes_with_the_model() -> None:
     """The one failure mode this cache must not have: stale vectors after a swap."""
-    assert embeddings._cache_key(SEQUENCES, "model-a") != embeddings._cache_key(
-        SEQUENCES, "model-b"
-    )
+    assert embeddings._cache_key(
+        SEQUENCES, spec_for("model-a")
+    ) != embeddings._cache_key(SEQUENCES, spec_for("model-b"))
 
 
 def test_cache_key_changes_with_the_inputs() -> None:
-    assert embeddings._cache_key(SEQUENCES, "m") != embeddings._cache_key(
-        [*SEQUENCES, "MKV"], "m"
+    assert embeddings._cache_key(SEQUENCES, spec_for()) != embeddings._cache_key(
+        [*SEQUENCES, "MKV"], spec_for()
     )
 
 
 def test_cache_key_changes_with_input_order() -> None:
     """Row i of the output must correspond to item i of the input."""
-    assert embeddings._cache_key(SEQUENCES, "m") != embeddings._cache_key(
-        list(reversed(SEQUENCES)), "m"
+    assert embeddings._cache_key(SEQUENCES, spec_for()) != embeddings._cache_key(
+        list(reversed(SEQUENCES)), spec_for()
     )
 
 
 def test_cache_key_is_stable_across_calls() -> None:
-    assert embeddings._cache_key(SEQUENCES, "m") == embeddings._cache_key(
-        SEQUENCES, "m"
+    assert embeddings._cache_key(SEQUENCES, spec_for()) == embeddings._cache_key(
+        SEQUENCES, spec_for()
     )
 
 
 def test_cache_key_is_not_fooled_by_concatenation() -> None:
     """["ab", "c"] and ["a", "bc"] are different inputs and must key differently."""
-    assert embeddings._cache_key(["ab", "c"], "m") != embeddings._cache_key(
-        ["a", "bc"], "m"
+    assert embeddings._cache_key(["ab", "c"], spec_for()) != embeddings._cache_key(
+        ["a", "bc"], spec_for()
     )
 
 
@@ -275,3 +280,143 @@ def test_embed_sequences_truncates_overlong_sequences() -> None:
     out = embeddings.embed_sequences(bundle, [long_sequence], batch_size=1)
     assert out.shape == (1, EXPECTED_WIDTHS[TINY_CHECKPOINT])
     assert np.isfinite(out).all()
+
+
+# --- Cache key covers the embedding code, not only its inputs (issue #4) -------
+#
+# The bug these pin down: the key used to hash only (sequences, model_name), so
+# editing the embedding code left every cache file looking valid and the cache
+# kept serving vectors from the old implementation. Every test below fails
+# against that earlier key.
+
+
+def test_cache_key_changes_with_the_truncation_limit() -> None:
+    """The exact case demonstrated in issue #4: 0.48 divergence, silently served."""
+    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    longer = {**spec, "max_sequence_length": spec["max_sequence_length"] + 1}
+    assert embeddings._cache_key(SEQUENCES, spec) != embeddings._cache_key(
+        SEQUENCES, longer
+    )
+
+
+def test_cache_key_changes_with_the_implementation_version() -> None:
+    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    bumped = {**spec, "impl_version": spec["impl_version"] + 1}
+    assert embeddings._cache_key(SEQUENCES, spec) != embeddings._cache_key(
+        SEQUENCES, bumped
+    )
+
+
+@pytest.mark.parametrize("field", ["pooling", "repr_layer_policy", "dtype"])
+def test_cache_key_changes_with_any_semantic_field(field: str) -> None:
+    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    altered = {**spec, field: "something-else"}
+    assert embeddings._cache_key(SEQUENCES, spec) != embeddings._cache_key(
+        SEQUENCES, altered
+    )
+
+
+def test_text_and_sequence_specs_never_collide() -> None:
+    """Same model name, different modality, must not share a cache entry."""
+    assert embeddings._cache_key(
+        SEQUENCES, embeddings.sequence_embedding_spec("m")
+    ) != embeddings._cache_key(SEQUENCES, embeddings.text_embedding_spec("m"))
+
+
+def test_text_spec_records_the_empty_text_rule() -> None:
+    """Mapping empty text to a zero vector is a semantic choice, so it is keyed."""
+    spec = embeddings.text_embedding_spec(embeddings.DEFAULT_SENTENCE_ENCODER)
+    assert spec["empty_text"] == "zero_vector"
+    other = {**spec, "empty_text": "encode_empty_string"}
+    assert embeddings._cache_key(["a"], spec) != embeddings._cache_key(["a"], other)
+
+
+def test_changing_the_truncation_limit_forces_a_recompute(
+    tmp_path: Path, counting_embedder: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end reproduction of issue #4, at the cached_embeddings level.
+
+    Before the fix this returned the first call's vectors with no warning, because
+    the key saw identical sequences and an identical model name.
+    """
+    cache_path = tmp_path / "seq.npz"
+
+    monkeypatch.setattr(embeddings, "MAX_SEQUENCE_LENGTH", 100)
+    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    assert counting_embedder == [SMALL_CHECKPOINT]
+
+    monkeypatch.setattr(embeddings, "MAX_SEQUENCE_LENGTH", 200)
+    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    assert (
+        counting_embedder == [SMALL_CHECKPOINT] * 2
+    ), "changing the truncation limit must recompute, not serve stale vectors"
+
+
+def test_changing_batch_size_alone_still_hits_the_cache(
+    tmp_path: Path, counting_embedder: list[str]
+) -> None:
+    """The deliberate exclusion: batching is a throughput knob, not a semantic one.
+
+    Pinned so nobody "fixes" the key later by adding batch_size, which would force
+    a 100-minute recompute for no correctness gain.
+    """
+    cache_path = tmp_path / "seq.npz"
+    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 8)
+    assert counting_embedder == [SMALL_CHECKPOINT], "batch_size must not be keyed"
+
+
+def test_cache_file_records_the_spec_that_produced_it(
+    tmp_path: Path, counting_embedder: list[str]
+) -> None:
+    """A cache file should explain itself rather than hold an opaque hash."""
+    cache_path = tmp_path / "seq.npz"
+    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+
+    with np.load(cache_path, allow_pickle=False) as payload:
+        assert embeddings.SPEC_FIELD in payload
+        stored = json.loads(str(payload[embeddings.SPEC_FIELD]))
+    assert stored == embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+
+
+def test_cache_miss_reports_which_field_changed(
+    tmp_path: Path,
+    counting_embedder: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A recompute should never be mysterious."""
+    cache_path = tmp_path / "seq.npz"
+    monkeypatch.setattr(embeddings, "MAX_SEQUENCE_LENGTH", 100)
+    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+
+    monkeypatch.setattr(embeddings, "MAX_SEQUENCE_LENGTH", 200)
+    with caplog.at_level("INFO"):
+        embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+
+    assert "max_sequence_length" in caplog.text
+    assert "100" in caplog.text and "200" in caplog.text
+
+
+def test_cache_miss_distinguishes_changed_inputs_from_changed_code() -> None:
+    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    assert "inputs themselves changed" in embeddings._describe_cache_miss(spec, spec)
+    assert "predates spec tracking" in embeddings._describe_cache_miss(None, spec)
+
+
+# Golden key. This deliberately fails whenever anything in the spec changes,
+# including an EMBEDDING_IMPL_VERSION bump. That is the point: the version
+# constant is the one part of the key that depends on a human remembering, so a
+# change to it must show up as a test to update rather than passing silently.
+# See the CLAUDE.md convention. If this test fails, confirm the spec change was
+# intended, then update the expected key here in the same commit.
+GOLDEN_SPEC_KEY = "8af2a753c16252d8cf7dfd41e7f19b4c9b01953aae290e56ee81ef24bd660857"
+GOLDEN_ITEMS = ["MKTFFVLLL", "MGSSHHHHHH"]
+
+
+def test_cache_key_is_stable_for_the_recorded_spec() -> None:
+    spec = embeddings.sequence_embedding_spec("esm2_t12_35M_UR50D")
+    assert embeddings._cache_key(GOLDEN_ITEMS, spec) == GOLDEN_SPEC_KEY, (
+        "the embedding spec changed. If that was intended, bump "
+        "EMBEDDING_IMPL_VERSION where required and update GOLDEN_SPEC_KEY here."
+    )

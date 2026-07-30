@@ -21,6 +21,16 @@ Three small, openly-released transformer-and-biology experiments (see `PLANNING.
 - Each run writes `logs/<name>-<timestamp>.log` plus a JSON manifest holding params, per-step timings, recorded counts, git commit and dirty flag, device, and package versions. `logs/` is gitignored; runs that produce committed metrics also drop a manifest copy beside them.
 - Record anything a writeup would cite with `run.record(...)`, so `DECISION_LOG.md` entries cite a manifest rather than memory. See `docs/run-logging.md`.
 
+## Embedding cache invalidation
+The embedding cache key covers the inputs **and** the code that shapes them, via the spec dicts in `biotp.embeddings` (`sequence_embedding_spec`, `text_embedding_spec`). Changing a named field there invalidates caches automatically. `EMBEDDING_IMPL_VERSION` covers changes that no named field captures, and it is the one part of the key that depends on a human noticing.
+
+**Review checklist, whenever a diff touches `biotp/embeddings.py`:**
+- Ask first: could this change the numbers a cached vector would hold? Pooling, truncation, normalization, layer selection, dtype, the empty-text rule, or any bug fix that moves the vectors, all mean yes.
+- If yes and no named spec field already captures it, **bump `EMBEDDING_IMPL_VERSION` in the same commit**, and say so in the commit message.
+- If yes, `test_cache_key_is_stable_for_the_recorded_spec` will fail. That failure is the reminder, not a nuisance: confirm the change was intended, then update `GOLDEN_SPEC_KEY` in the same commit. Never update the golden key on its own to make a red test green.
+- If no, the key should be unchanged and that test should still pass. A surprising failure means the change was less cosmetic than it looked.
+- Stale caches are the silent failure mode: results keep computing, numbers stay plausible, and they describe code that is no longer in the repo. Prefer an unnecessary bump (costs a recompute) to a missed one (costs the truth of a result).
+
 ## Experiment workflow
 - Every meaningful run or decision gets an entry in that project's `DECISION_LOG.md` (newest on top): question/hypothesis, setup (data, model, config), result (metric, plot ref), decision/next step.
 - MVP first: get an end-to-end number with frozen embeddings and a small head before adding fine-tuning, fusion, or scale.
