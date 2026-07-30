@@ -109,8 +109,11 @@ arm and every seed:
 | `text_free` | MiniLM over function text | 384 |
 | `text_structured` | MiniLM over GO terms and keywords | 384 |
 
-Because the cache is keyed on both the inputs and the encoder name, re-running to
-change the head or add an arm costs seconds. Only the first run pays for encoding.
+Because the cache is keyed on the inputs, the encoder name, and the embedding code
+itself (see [embedding cache](../embedding-cache.md)), re-running to change the
+head or add an arm costs seconds. Only the first run pays for encoding, and a
+change to how the vectors are computed invalidates the cache rather than silently
+reusing it.
 
 **Each arm selects blocks and concatenates them**, so the head's input width is
 480, 384, or 864 depending on the arm. The shuffled-text control is the one arm

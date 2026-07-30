@@ -73,6 +73,11 @@ Two details that affect correctness:
   padding are excluded, so a short protein embedded alongside long ones gets the
   same vector as it would alone. This is verified in the test suite to within
   float32 noise.
+- Batches are formed by sequence length rather than in dataset order, which is
+  what keeps the padding cost down (see [results.md](results.md)), and the rows
+  are scattered back afterwards so row *i* is always protein *i*. The test suite
+  pins that ordering, because a permuted embedding matrix would train happily and
+  report plausible metrics against the wrong proteins.
 - Sequences longer than **1,022 residues** are truncated, that being ESM-2's
   1,024-position limit minus the two special tokens. Truncation keeps the
   N-terminus, which is where signal and transit peptides sit, so the most
