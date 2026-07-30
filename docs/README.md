@@ -18,6 +18,8 @@ these are plain Markdown files read in the repo. See `PLANNING.md`.
   judged.
 - [Data](grounding-multimodal/data.md): inputs, labels, provenance, preprocessing
   decisions, and the train/validation/test split.
+- [Results](grounding-multimodal/results.md): the six-arm numbers, what the control
+  shows, and what is still unresolved.
 - [Method](grounding-multimodal/method.md): how splits are made, what the trained
   head is, the metrics, and how the six-arm runner keeps the comparison fair.
 

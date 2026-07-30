@@ -13,5 +13,6 @@ Does grounding a protein-sequence representation in text (functional annotations
 - [Introduction](../../docs/grounding-multimodal/introduction.md): the question, biological and ML framing, objectives, evaluation criteria.
 - [Data](../../docs/grounding-multimodal/data.md): inputs, labels, provenance, preprocessing decisions, splits.
 - [Method](../../docs/grounding-multimodal/method.md): splits, head, metrics, and the six-arm runner.
+- [Results](../../docs/grounding-multimodal/results.md): six-arm numbers and interpretation.
 
 See `../../PLANNING.md` for full context. Log runs in `DECISION_LOG.md`.
