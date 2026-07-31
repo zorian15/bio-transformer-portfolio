@@ -17,8 +17,8 @@ Numbering matches build order, so Project 1 is the one to build first. That orde
 | Path | Role |
 |---|---|
 | `PLANNING.md` | Source-of-truth plan for all three projects |
-| `src/biotp/` | Shared infrastructure: ESM-2 embeddings, fine-tune harness, leakage-aware eval, annotation-text ablation, HF release helpers |
-| `tests/` | Tests for `biotp`; the stub modules carry strict-`xfail` contract tests (see below) |
+| `src/biotp/` | Shared infrastructure: ESM-2 embeddings, zero-shot masked-marginal scoring, fine-tune harness (linear probe and LoRA), leakage-aware eval, annotation-text ablation, HF release helpers |
+| `tests/` | Tests for `biotp`; the remaining stub module carries strict-`xfail` contract tests (see below) |
 | `projects/*/` | One folder per project: `README.md` (scope) + `DECISION_LOG.md` (experiment log) |
 | `data/` | Datasets (gitignored); see `data/README.md` for what to fetch |
 | `notebooks/` | Exploratory notebooks |
@@ -37,9 +37,9 @@ pip install -e .                       # installs the biotp package (editable)
 See `CLAUDE.md`. In short: log every meaningful run in the relevant project's `DECISION_LOG.md`; Python is formatted with Black and checked with ruff/mypy/pytest; results are reported honestly, negatives included.
 
 ## Tests
-`pytest` from the repo root. The default run deselects tests marked `network`, which download model checkpoints; `pytest -m network` selects exactly those, and CI runs them for you (see below). `biotp.utils`, `biotp.runlog`, `biotp.embeddings`, `biotp.evaluation` and `biotp.text_ablation` are implemented and tested normally. `biotp.training` and `biotp.release` are still scaffold stubs, so their tests come in two kinds:
+`pytest` from the repo root. The default run deselects tests marked `network`, which download model checkpoints; `pytest -m network` selects exactly those, and CI runs them for you (see below). `biotp.utils`, `biotp.runlog`, `biotp.embeddings`, `biotp.zero_shot`, `biotp.training` (linear probe and LoRA), `biotp.evaluation` and `biotp.text_ablation` are implemented and tested normally. `biotp.release` is still a scaffold stub, so its tests come in two kinds:
 
-- **Signature and convention tests** run for real today. They pin design decisions that should outlive implementation: embedding width comes from the checkpoint rather than a caller argument, `train(mode=...)` and `push_to_hub(private=...)` have no defaults, and `build_model_card` cannot omit `limitations`.
+- **Signature and convention tests** run for real today, and they cover the implemented modules too. They pin design decisions that should outlive implementation: embedding width comes from the checkpoint rather than a caller argument, `train(mode=...)`, `embed_sequences(readout=..., positions=...)` and `push_to_hub(private=...)` have no defaults, and `build_model_card` cannot omit `limitations`.
 - **Behavioral tests** are written against the intended contract and marked `xfail(raises=NotImplementedError)`. With `xfail_strict = true` set in `pyproject.toml`, each one flips to a hard failure the moment the stub starts working, which is the cue to delete the marker and keep the assertions rather than leave a test quietly skipped forever.
 
 `tests/test_environment.py` guards one environment invariant: PyTorch must come from conda-forge, not pip. The pip wheel bundles a second `libomp.dylib` alongside the env's own, and importing torch then aborts the process with `OMP: Error #15` instead of raising, which takes down the whole test run rather than failing one test. Since that crash cannot be caught where it happens, the test checks the packaging structurally and reports how to fix it. It is macOS-specific and skips elsewhere, including on CI's Linux runners, which install from `environment.yml` and so cannot hit the hazard in the first place.

@@ -17,6 +17,7 @@ import pytest
 
 from biotp import training
 from biotp.embeddings import Esm2Bundle
+from biotp.utils import set_seed
 
 WIDTH = 16
 VOCAB = 33
@@ -121,6 +122,7 @@ def toy_split(count: int, seed: int) -> training.VariantSplit:
         sequences=sequences,
         positions=positions,
         targets=np.asarray(targets, dtype=np.float32),
+        wildtype=None,
     )
 
 
@@ -141,6 +143,7 @@ def run(
         "lora_rank": 4,
         "lora_alpha": 8,
         "target_modules": ("q_proj", "v_proj"),
+        "seed": 0,
     }
     kwargs.update(overrides)
     return training.train_lora(**kwargs)
@@ -155,7 +158,8 @@ def test_lora_attaches_to_the_named_modules() -> None:
     """
     _, _, history = run()
     assert history["trainable_encoder_parameters"] > 0
-    assert history["lora_modules_adapted"] == 8, "2 layers x (q_proj, v_proj) x 2"
+    # 2 layers x 2 adapted modules x (lora_A, lora_B).
+    assert history["lora_parameter_tensors"] == 8
 
 
 def test_the_base_encoder_stays_frozen() -> None:
@@ -183,6 +187,41 @@ def test_the_base_encoder_stays_frozen() -> None:
     )
     assert history["trainable_encoder_parameters"] == adapter_parameters
     assert history["trainable_encoder_parameters"] < history["encoder_parameters"]
+
+
+def test_base_weights_are_unchanged_by_training() -> None:
+    """The invariant that makes adapter-only checkpointing correct.
+
+    The best-epoch snapshot saves only the adapters, because the base cannot
+    differ between epochs. Cloning the whole encoder instead would allocate a
+    full copy on-device every time validation improved: about 140 MB at 35M and
+    2.6 GB at 650M. That shortcut is valid exactly as long as the base really is
+    frozen, so this pins it rather than trusting it.
+
+    peft wraps modules in place and keeps the original Parameter object as the
+    wrapped layer's base, so holding a reference across the call compares the
+    same tensor rather than a same-named one.
+    """
+    import torch
+
+    encoder = tiny_bundle()
+    watched = encoder.model.layers[0].self_attn.q_proj.weight
+    before = watched.detach().clone()
+
+    trained, _, history = run(max_epochs=4, encoder=encoder)
+
+    torch.testing.assert_close(watched, before)
+    assert history["best_epoch"] >= 0, "nothing trained, so the check is vacuous"
+
+    adapters = [
+        parameter
+        for name, parameter in trained.model.named_parameters()
+        if "lora_B" in name
+    ]
+    assert adapters, "no adapter weights found"
+    assert any(
+        bool((parameter != 0).any()) for parameter in adapters
+    ), "every lora_B is still zero, so training moved nothing and the base check is vacuous"
 
 
 def test_training_reduces_loss() -> None:
@@ -217,6 +256,7 @@ def test_rejects_mismatched_targets_and_sequences() -> None:
         sequences=["MKT", "MKA"],
         positions=[0, 1],
         targets=np.asarray([1.0], dtype=np.float32),
+        wildtype=None,
     )
     with pytest.raises(AssertionError):
         run(train_data=broken)
@@ -224,7 +264,10 @@ def test_rejects_mismatched_targets_and_sequences() -> None:
 
 def test_rejects_an_empty_split() -> None:
     empty = training.VariantSplit(
-        sequences=[], positions=[], targets=np.asarray([], dtype=np.float32)
+        sequences=[],
+        positions=[],
+        targets=np.asarray([], dtype=np.float32),
+        wildtype=None,
     )
     with pytest.raises(AssertionError):
         run(train_data=empty)
@@ -235,6 +278,7 @@ def test_at_position_readout_requires_positions() -> None:
         sequences=["MKT", "MKA"],
         positions=None,
         targets=np.asarray([1.0, 2.0], dtype=np.float32),
+        wildtype=None,
     )
     with pytest.raises(AssertionError):
         run(train_data=without)
@@ -261,3 +305,140 @@ def test_train_points_at_train_lora_rather_than_raising_blindly() -> None:
             max_epochs=1,
             lr=1e-3,
         )
+
+
+# --- Guards the frozen rung had and this one did not (PR #13 review) ----------
+
+
+@pytest.mark.parametrize("position", [-1, 99])
+def test_rejects_an_out_of_range_position(position: int) -> None:
+    """The LoRA path must reject what the frozen path rejects.
+
+    Before this guard, `_check_split` validated only the *count* of positions, so
+    an out-of-range index reached `torch.gather` and came back as whatever token
+    sat at that slot: a padding vector when the batch held a longer sequence, the
+    BOS vector for -1. Both train, and both report a plausible Spearman.
+    """
+    split = training.VariantSplit(
+        sequences=["MKTFF", "ACDEF"],
+        positions=[position, 0],
+        targets=np.asarray([1.0, 2.0], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        run(train_data=split)
+
+
+def test_rejects_a_position_lost_to_truncation() -> None:
+    split = training.VariantSplit(
+        sequences=["A" * (LIMIT + 10)],
+        positions=[LIMIT + 5],
+        targets=np.asarray([1.0], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        run(train_data=split)
+
+
+def test_rejects_an_encoder_that_already_carries_adapters() -> None:
+    """peft wraps in place, so a reused bundle would stack adapter sets.
+
+    A sweep over readout, N and seed is the obvious shape for rung 3, and peft
+    only warns in this case. Every run after the first would silently be a
+    continuation of its predecessor rather than an independent fit.
+    """
+    encoder = tiny_bundle()
+    run(encoder=encoder)
+
+    with pytest.raises(AssertionError, match="already carries LoRA adapters"):
+        run(encoder=encoder)
+
+
+def test_the_seed_changes_the_batch_order() -> None:
+    """The ladder's seed axis has to be real on rung 3, not just on rung 2.
+
+    The frozen rung draws its permutation from the global torch RNG, so it
+    already responds to seeding. A rung 3 whose shuffle depended only on the
+    epoch would report three identical runs as a three-seed spread, and the
+    standard deviations in the results table would be fiction.
+    """
+
+    def losses(seed: int) -> list[float]:
+        # `seed` governs the batch order only. Head initialisation and dropout
+        # draw from the global torch RNG, which is the caller's to set, exactly
+        # as Project 1's run_arms does it. Pinning it here isolates the one
+        # source of randomness under test.
+        set_seed(1234)
+        return run(max_epochs=3, seed=seed)[2]["train_loss"]
+
+    assert losses(0) == losses(0), "same seed must reproduce"
+    assert losses(0) != losses(1), "different seeds must give different batch orders"
+
+
+# --- Difference-at-position, the third pre-registered readout ------------------
+
+
+WILDTYPE = "MKTFFVLLLACDEFGHIKLM"
+
+
+def difference_split(count: int, seed: int) -> training.VariantSplit:
+    base = toy_split(count, seed)
+    return training.VariantSplit(
+        sequences=base.sequences,
+        positions=base.positions,
+        targets=base.targets,
+        wildtype=WILDTYPE,
+    )
+
+
+def test_difference_readout_is_zero_against_the_wild_type_itself() -> None:
+    """The closed form: a variant identical to the reference differs by nothing.
+
+    Cheap and exact, and it catches the two ways this readout goes wrong, an
+    off-by-one on either the mutant or the reference row, without needing to know
+    what the encoder computes.
+    """
+    import torch
+
+    encoder = tiny_bundle()
+    out = training._encode_batch(
+        encoder, [WILDTYPE], [7], "difference_at_position", WILDTYPE
+    )
+    torch.testing.assert_close(out, torch.zeros_like(out))
+
+
+def test_difference_readout_trains_end_to_end() -> None:
+    _, _, history = run(
+        max_epochs=4,
+        readout="difference_at_position",
+        train_data=difference_split(24, seed=0),
+        val_data=difference_split(8, seed=1),
+    )
+    assert history["readout"] == "difference_at_position"
+    assert history["train_loss"][-1] < history["train_loss"][0]
+
+
+def test_difference_readout_requires_a_wildtype() -> None:
+    with pytest.raises(AssertionError, match="no wildtype"):
+        run(
+            readout="difference_at_position",
+            train_data=toy_split(24, seed=0),
+            val_data=toy_split(8, seed=1),
+        )
+
+
+def test_a_wildtype_on_another_readout_is_rejected() -> None:
+    """Silently ignoring it would let a caller think the difference was taken."""
+    with pytest.raises(AssertionError, match="does not"):
+        run(readout="at_position", train_data=difference_split(24, seed=0))
+
+
+def test_rejects_a_wildtype_of_the_wrong_length() -> None:
+    split = training.VariantSplit(
+        sequences=["MKTFF"],
+        positions=[0],
+        targets=np.asarray([1.0], dtype=np.float32),
+        wildtype="MKTFFVLLL",
+    )
+    with pytest.raises(AssertionError, match="substitutions preserve length"):
+        run(readout="difference_at_position", train_data=split)

@@ -232,6 +232,32 @@ def _mean_pool_residues(representations: Any, lengths: Any) -> Any:
     return masked.sum(dim=1) / lengths.unsqueeze(1).to(representations.dtype)
 
 
+def validate_positions(
+    sequences: list[str], positions: list[int], max_sequence_length: int
+) -> None:
+    """Assert every requested residue index still exists after truncation.
+
+    Public because both rungs of the DMS ladder need it and they live in
+    different modules. Sharing the collapse arithmetic without sharing this guard
+    is what let the frozen path raise on an out-of-range position while the LoRA
+    path silently returned a padding vector.
+
+    A position past the truncation limit is an error rather than a clamp: the
+    residue is not in the model's view, so returning the nearest one in scope
+    would score a different mutation and still look plausible.
+    """
+    assert len(positions) == len(sequences), (
+        f"got {len(positions)} positions for {len(sequences)} sequences; "
+        "they are matched by index"
+    )
+    for index, (position, sequence) in enumerate(zip(positions, sequences)):
+        length = min(len(sequence), max_sequence_length)
+        assert 0 <= position < length, (
+            f"position {position} is outside sequence {index}, which has "
+            f"{length} residues after truncation to {max_sequence_length}"
+        )
+
+
 def _select_residue(representations: Any, positions: Any) -> Any:
     """Gather one residue vector per batch row, on-device.
 
@@ -305,22 +331,11 @@ def embed_sequences(
         )
     else:
         assert positions is not None, f"readout {readout!r} requires positions"
-        assert len(positions) == len(sequences), (
-            f"got {len(positions)} positions for {len(sequences)} sequences; "
-            "they are matched by index"
-        )
+        validate_positions(sequences, positions, model.max_sequence_length)
 
     truncated = [sequence[: model.max_sequence_length] for sequence in sequences]
     assert all(truncated), "at least one sequence was empty"
     lengths = [len(sequence) for sequence in truncated]
-
-    if positions is not None:
-        for index, (position, length) in enumerate(zip(positions, lengths)):
-            assert 0 <= position < length, (
-                f"position {position} is outside sequence {index}, which has "
-                f"{length} residues after truncation to "
-                f"{model.max_sequence_length}"
-            )
 
     out = np.empty((len(truncated), model.embedding_dim), dtype=np.float32)
     batches = _length_bucketed_batches(lengths, batch_size)

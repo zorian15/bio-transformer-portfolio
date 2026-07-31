@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from biotp.embeddings import validate_positions
 from biotp.utils import get_device
 
 FinetuneMode = Literal["linear_probe", "lora", "full"]
@@ -229,25 +230,56 @@ def predict(model: Any, features: np.ndarray) -> np.ndarray:
         return np.asarray(outputs.reshape(-1).cpu().numpy())
 
 
+# The readouts rung 3 supports. Deliberately a superset of `embeddings.Readout`:
+# difference-at-position is `mutant[i] - wildtype[i]`, and on the frozen rung the
+# caller composes it from two cached matrices. Inside a training loop it cannot
+# be composed that way, because the encoder moves every step and the wild-type
+# vector has to be recomputed under the current adapters.
+#
+# It has to exist here regardless of that inconvenience: issue #11 pre-registers
+# three readouts as a full axis precisely so no readout is selected after seeing
+# results, and a rung 3 offering fewer than rung 2 would bias the headline delta
+# downward exactly as a selection step would.
+LoraReadout = Literal["mean", "at_position", "difference_at_position"]
+
+# The runtime counterpart of LoraReadout, for callers reading a readout out of a
+# config file or a SLURM array index, where the Literal cannot help.
+LORA_READOUTS: tuple[str, ...] = ("mean", "at_position", "difference_at_position")
+
+
 @dataclass(frozen=True)
 class VariantSplit:
-    """One split's sequences, readout positions, and regression targets.
+    """One split's sequences, readout positions, targets, and wild type.
 
-    Grouped into a type rather than passed as a bare tuple because the three move
+    Grouped into a type rather than passed as a bare tuple because these move
     together and are matched by index: a silent misalignment between a sequence
     and its target trains happily and reports a plausible Spearman.
 
     positions is None for the mean readout and one zero-based residue index per
     sequence otherwise, mirroring `embeddings.embed_sequences`.
+
+    wildtype is the unmutated reference, needed only by the difference readout
+    and None otherwise. It is one sequence rather than one per variant because a
+    DMS assay has a single reference, which is also why the difference readout
+    costs one extra row per batch rather than one extra forward per variant.
     """
 
     sequences: list[str]
     positions: list[int] | None
     targets: np.ndarray
+    wildtype: str | None
 
 
-def _check_split(split: VariantSplit, readout: str, name: str) -> None:
-    """Fail loudly on a split that would train but mean nothing."""
+def _check_split(
+    split: VariantSplit, readout: LoraReadout, max_sequence_length: int, name: str
+) -> None:
+    """Fail loudly on a split that would train but mean nothing.
+
+    Delegates the position range check to `embeddings.validate_positions`, the
+    same guard the frozen rung uses. Checking only the *count* here is what let
+    an out-of-range position reach `torch.gather` and come back as a padding
+    vector, which trains and reports a plausible Spearman.
+    """
     assert split.sequences, f"{name} split is empty"
     assert len(split.sequences) == len(split.targets), (
         f"{name} split has {len(split.sequences)} sequences and "
@@ -262,14 +294,34 @@ def _check_split(split: VariantSplit, readout: str, name: str) -> None:
         assert (
             split.positions is not None
         ), f"{name} split has no positions, which readout {readout!r} requires"
-        assert len(split.positions) == len(split.sequences), (
-            f"{name} split has {len(split.positions)} positions for "
-            f"{len(split.sequences)} sequences"
+        validate_positions(split.sequences, split.positions, max_sequence_length)
+
+    if readout == "difference_at_position":
+        assert split.wildtype, (
+            f"{name} split has no wildtype, which readout {readout!r} requires: "
+            "the difference is against the unmutated reference"
+        )
+        # Substitutions preserve length, so a mismatch means the split paired its
+        # variants with the wrong reference, and every difference vector would be
+        # a comparison against the wrong residue.
+        for index, sequence in enumerate(split.sequences):
+            assert len(sequence) == len(split.wildtype), (
+                f"{name} sequence {index} is {len(sequence)} residues but the "
+                f"wildtype is {len(split.wildtype)}; substitutions preserve length"
+            )
+    else:
+        assert split.wildtype is None, (
+            f"{name} split carries a wildtype, but readout {readout!r} does not "
+            "use one; passing it would be silently ignored"
         )
 
 
 def _encode_batch(
-    encoder: Any, sequences: list[str], positions: list[int] | None, readout: str
+    encoder: Any,
+    sequences: list[str],
+    positions: list[int] | None,
+    readout: LoraReadout,
+    wildtype: str | None,
 ) -> Any:
     """Tokenize, forward, and collapse one batch, keeping gradients attached.
 
@@ -280,14 +332,23 @@ def _encode_batch(
 
     The collapse itself is imported rather than reimplemented, so both rungs read
     the same residue through the same code.
+
+    Under the difference readout the wild type rides along as one extra row in
+    the same batch, so it passes through the current adapters rather than a stale
+    copy of them, and costs one row rather than one forward per variant.
     """
     import torch
 
     from biotp.embeddings import _mean_pool_residues, _select_residue
 
     truncated = [sequence[: encoder.max_sequence_length] for sequence in sequences]
+    rows = list(truncated)
+    if readout == "difference_at_position":
+        assert wildtype is not None  # Established by _check_split; narrows for mypy.
+        rows.append(wildtype[: encoder.max_sequence_length])
+
     _, _, tokens = encoder.batch_converter(
-        [(str(index), sequence) for index, sequence in enumerate(truncated)]
+        [(str(index), sequence) for index, sequence in enumerate(rows)]
     )
     tokens = tokens.to(encoder.device)
 
@@ -299,13 +360,18 @@ def _encode_batch(
             [len(sequence) for sequence in truncated], device=representations.device
         )
         collapsed: Any = _mean_pool_residues(representations, lengths)
-    else:
-        assert positions is not None  # Established by _check_split; narrows for mypy.
-        collapsed = _select_residue(
-            representations,
-            torch.tensor(positions, device=representations.device),
-        )
-    return collapsed
+        return collapsed
+
+    assert positions is not None  # Established by _check_split; narrows for mypy.
+    index = torch.tensor(positions, device=representations.device)
+
+    if readout == "at_position":
+        return _select_residue(representations, index)
+
+    # Residue i sits at token i + 1, matching _select_residue's own offset.
+    mutant = _select_residue(representations[:-1], index)
+    reference = representations[-1][index + 1]
+    return mutant - reference
 
 
 def train_lora(
@@ -313,13 +379,14 @@ def train_lora(
     head: Any,
     train_data: VariantSplit,
     val_data: VariantSplit,
-    readout: str,
+    readout: LoraReadout,
     max_epochs: int,
     lr: float,
     batch_size: int,
     lora_rank: int,
     lora_alpha: int,
     target_modules: tuple[str, ...],
+    seed: int,
 ) -> tuple[Any, Any, dict]:
     """Fine-tune LoRA adapters on the encoder alongside the head.
 
@@ -343,6 +410,10 @@ def train_lora(
         lora_alpha: adapter scaling.
         target_modules: leaf module names to adapt. fair-esm's ESM-2 exposes
             q_proj, k_proj, v_proj and out_proj under layers.N.self_attn.
+        seed: draws the batch order. Required, because the ladder's seed axis is
+            only real if rung 3 actually varies with it: the frozen rung draws
+            from the global torch RNG and so responds to seeding, and a rung 3
+            that ignored the seed would report three identical runs as a spread.
 
     Returns:
         (encoder, head, history). Both carry the weights from the best validation
@@ -355,7 +426,12 @@ def train_lora(
             converges, and reports a number indistinguishable from rung 2.
     """
     import torch
-    from peft import LoraConfig, get_peft_model
+    from peft import (
+        LoraConfig,
+        get_peft_model,
+        get_peft_model_state_dict,
+        set_peft_model_state_dict,
+    )
     from torch import nn
 
     assert max_epochs > 0, f"max_epochs must be positive, got {max_epochs}"
@@ -365,15 +441,28 @@ def train_lora(
     assert lora_alpha > 0, f"lora_alpha must be positive, got {lora_alpha}"
     assert target_modules, "target_modules is empty, so nothing would be adapted"
 
+    # peft wraps in place, so the caller's bundle is modified. Calling twice on
+    # one bundle stacks a second adapter set on the first run's weights, and peft
+    # only warns. That shape is the obvious one for a sweep over readout, N and
+    # seed, and it would quietly make every run after the first a continuation of
+    # its predecessor.
+    assert not hasattr(encoder.model, "peft_config"), (
+        "encoder.model already carries LoRA adapters, so this bundle has been "
+        "through train_lora before. Load a fresh bundle per run: wrapping again "
+        "would stack adapters on the previous run's weights."
+    )
+
     task = getattr(head, "task", None)
     assert task == "regression", (
         f"train_lora expects a regression head, got task {task!r}; build it with "
         "build_head so the loss cannot disagree with the head"
     )
-    assert readout in ("mean", "at_position"), f"unknown readout {readout!r}"
+    assert (
+        readout in LORA_READOUTS
+    ), f"unknown readout {readout!r}; expected one of {sorted(LORA_READOUTS)}"
 
-    _check_split(train_data, readout, "train")
-    _check_split(val_data, readout, "val")
+    _check_split(train_data, readout, encoder.max_sequence_length, "train")
+    _check_split(val_data, readout, encoder.max_sequence_length, "val")
 
     # The bundle is the source of truth for where its model already lives, set by
     # load_esm2. Re-deriving it here would let the two disagree, and a model on
@@ -422,9 +511,13 @@ def train_lora(
         "lora_rank": lora_rank,
         "lora_alpha": lora_alpha,
         "target_modules": list(target_modules),
+        "seed": seed,
         "encoder_parameters": encoder_parameters,
         "trainable_encoder_parameters": trainable_encoder_parameters,
-        "lora_modules_adapted": sum(
+        # Tensors, not modules: peft adds two per adapted module (lora_A and
+        # lora_B). Named for what it counts, because this lands in a run manifest
+        # where the name is all a later reader has.
+        "lora_parameter_tensors": sum(
             1 for name, _ in encoder.model.named_parameters() if "lora_" in name
         ),
     }
@@ -444,7 +537,11 @@ def train_lora(
                     None if split.positions is None else split.positions[start:stop]
                 )
                 features = _encode_batch(
-                    encoder, split.sequences[start:stop], positions, readout
+                    encoder,
+                    split.sequences[start:stop],
+                    positions,
+                    readout,
+                    split.wildtype,
                 )
                 targets = torch.as_tensor(
                     split.targets[start:stop], dtype=torch.float32, device=device
@@ -455,7 +552,12 @@ def train_lora(
     for epoch in range(max_epochs):
         encoder.model.train()
         head.train()
-        order = np.random.default_rng(epoch).permutation(len(train_data.sequences))
+        # Seeded by (seed, epoch) together: the epoch alone would give every run
+        # the same batch order regardless of seed, so the ladder's three seeds
+        # would be three identical runs reported as a spread.
+        order = np.random.default_rng([seed, epoch]).permutation(
+            len(train_data.sequences)
+        )
         epoch_loss = 0.0
 
         for start in range(0, len(order), batch_size):
@@ -471,7 +573,9 @@ def train_lora(
             ).reshape(-1, 1)
 
             optimizer.zero_grad(set_to_none=True)
-            features = _encode_batch(encoder, sequences, positions, readout)
+            features = _encode_batch(
+                encoder, sequences, positions, readout, train_data.wildtype
+            )
             loss = loss_fn(head(features), targets)
             loss.backward()
             optimizer.step()
@@ -484,10 +588,14 @@ def train_lora(
         if val_loss < best_val:
             best_val = val_loss
             best_epoch = epoch
+            # Adapters only, not the whole encoder. The base is frozen, so it
+            # cannot differ between epochs, and cloning it would allocate a full
+            # copy on-device every time validation improved: about 140 MB at 35M
+            # and 2.6 GB at 650M, to preserve well under a megabyte of adapters.
             best_state = (
                 {
                     key: value.detach().clone()
-                    for key, value in encoder.model.state_dict().items()
+                    for key, value in get_peft_model_state_dict(encoder.model).items()
                 },
                 {
                     key: value.detach().clone()
@@ -498,7 +606,7 @@ def train_lora(
             break
 
     assert best_state is not None, "training completed without a best epoch"
-    encoder.model.load_state_dict(best_state[0])
+    set_peft_model_state_dict(encoder.model, best_state[0])
     head.load_state_dict(best_state[1])
 
     history["best_epoch"] = best_epoch

@@ -59,6 +59,11 @@ EXPECTED_FUNCTIONS = {
         # build the code half of the key. See issue #4 and docs/embedding-cache.md.
         "sequence_embedding_spec",
         "text_embedding_spec",
+        # Public because both rungs of the DMS ladder need the same position
+        # guard and they live in different modules; sharing the collapse without
+        # sharing the guard let one path raise where the other returned a padding
+        # vector. See issue #11.
+        "validate_positions",
     },
     "biotp.evaluation": {
         "grouped_split",
