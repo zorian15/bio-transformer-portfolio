@@ -47,7 +47,7 @@ That is the narrow claim, and it holds. The broader claim, that this is
 *grounding* rather than annotations quietly restating the label, has now been
 measured by [ablating the localization-stating sentences and
 re-running](grounding-multimodal/results.md#separating-grounding-from-leakage).
-About an eighth of the gain is the prose naming the compartment. Most of the rest
+About a seventh of the gain is the prose naming the compartment. Most of the rest
 is not leakage, but neither is it robust: a length-matched random-sentence
 control shows the bulk of the gain depends on having the whole annotation,
 particularly for the rare compartments. The filter and its judgement calls are

@@ -1,13 +1,13 @@
 # Results: does language grounding help?
 
-**Short answer: yes, mostly, and about an eighth of it is leakage.** Adding
+**Short answer: yes, mostly, and about a seventh of it is leakage.** Adding
 free-text function annotations to a frozen ESM-2 representation improves macro-F1
 from 0.616 to 0.740 on held-out proteins, and pairing each protein with a
 *different* protein's text destroys the gain, which rules out the boring
 explanation.
 
-Ablating the sentences that name a compartment costs 12% of that gain, so the
-prose is partly reading the answer. A further 56% turns out to depend simply on
+Ablating the sentences that name a compartment costs 15% of that gain, so the
+prose is partly reading the answer. A further 53% turns out to depend simply on
 having the full annotation, which only a length-matched random control could
 reveal. See [Separating grounding from
 leakage](#separating-grounding-from-leakage).
@@ -198,15 +198,15 @@ separates "removed the answer" from "removed text".
 |---|---:|---:|
 | sequence-only | 0.616 ± 0.004 | |
 | **sequence + free text** | **0.740 ± 0.006** | **+0.124** |
-| sequence + cleaned text | 0.743 ± 0.003 | +0.127 |
-| sequence + random-ablated text | 0.671 ± 0.017 | +0.055 |
-| sequence + ablated text | 0.656 ± 0.013 | +0.040 |
+| sequence + cleaned text | 0.743 ± 0.004 | +0.127 |
+| sequence + random-ablated text | 0.674 ± 0.013 | +0.058 |
+| sequence + ablated text | 0.655 ± 0.013 | +0.039 |
 | text-only, free text | 0.617 ± 0.015 | |
-| text-only, cleaned | 0.630 ± 0.006 | |
-| text-only, random-ablated | 0.518 ± 0.011 | |
-| text-only, ablated | 0.482 ± 0.008 | |
+| text-only, cleaned | 0.629 ± 0.005 | |
+| text-only, random-ablated | 0.519 ± 0.011 | |
+| text-only, ablated | 0.483 ± 0.007 | |
 
-![Macro-F1 for the ablation ladder: sequence+free text 0.740, cleaned 0.743, ablated 0.656, random-ablated 0.671, against the sequence-only baseline of 0.616, with the four text-only counterparts below.](figures/ablation-macro-f1.svg)
+![Macro-F1 for the ablation ladder: sequence+free text 0.740, cleaned 0.743, ablated 0.655, random-ablated 0.674, against the sequence-only baseline of 0.616, with the four text-only counterparts below.](figures/ablation-macro-f1.svg)
 
 *The ablation ladder. The bar to compare the ablated arm against is the
 random-ablated control directly above it, not the unfiltered arm at the top.*{: .figure-caption }
@@ -218,10 +218,10 @@ were 22% of the corpus by character count, and removing them moves no arm
 materially. Worth knowing, and it means the unfiltered baseline was never
 contaminated by bookkeeping.
 
-**The ablation drops the arm to 0.656, but most of that is not leakage.** Read
-against the unfiltered arm alone, 68% of the gain vanishes, which looks like a
+**The ablation drops the arm to 0.655, but most of that is not leakage.** Read
+against the unfiltered arm alone, 69% of the gain vanishes, which looks like a
 damning leakage result. Read against the length-matched control, it is not:
-removing an equal number of *randomly chosen* sentences drops the arm to 0.671,
+removing an equal number of *randomly chosen* sentences drops the arm to 0.674,
 almost as far. The gain is fragile to losing text at all, because the filter takes
 text disproportionately from the rare compartments where the gain was concentrated
 (72% of Mitochondrion proteins lose a sentence, against 14% of Extracellular ones).
@@ -230,16 +230,21 @@ That splits the +0.124 three ways:
 
 | Component | Macro-F1 | Share of the gain |
 |---|---:|---:|
-| Lost by removing 13.5% of sentences at all | 0.069 | 56% |
-| Lost specifically because those sentences named the compartment | 0.015 | 12% |
-| Survives both | 0.040 | 32% |
+| Lost by removing 13.5% of sentences at all | 0.066 | 53% |
+| Lost specifically because those sentences named the compartment | 0.019 | 15% |
+| Survives both | 0.039 | 31% |
 
-**The leakage component is small but real.** 0.015 macro-F1 is smaller than either
+All three shares are of the *unfiltered* gain. Anchoring instead on the cleaned
+arm, which is what the ablated variants actually derive from, shifts the split by
+about a point and changes nothing; the unfiltered arm is used because it is the
+number the MVP reported.
+
+**The leakage component is small but real.** 0.019 macro-F1 is smaller than either
 arm's seed spread, so the standard deviations in the table above do not settle it.
 The per-seed pairing does: the ablated arm sits below the control in all three
-seeds, by 0.011, 0.013 and 0.022. Seeds share a split and an initialization
+seeds, by 0.018, 0.013 and 0.026. Seeds share a split and an initialization
 stream, so the paired difference is far better resolved than the individual
-spreads suggest. The sign is consistent; the magnitude is worth about one eighth
+spreads suggest. The sign is consistent; the magnitude is worth about one seventh
 of the effect.
 
 So, against the three outcomes the experiment was set up to distinguish:
@@ -249,16 +254,16 @@ So, against the three outcomes the experiment was set up to distinguish:
   is mostly caused by removing text, and an equal-sized random removal reproduces
   four fifths of it.
 - The honest answer is the third one, and it is more specific than "somewhere in
-  between": **about an eighth of the free-text gain is the prose naming the
+  between": **about a seventh of the free-text gain is the prose naming the
   compartment. The rest is not leakage, but neither is it robust: it depends on
   having the whole annotation, particularly for the rare classes.**
 
 The single most useful thing the ablation produced is that middle finding, and it
 is only visible because of the control. Without a length-matched comparison this
-run would have been reported as "68% of the gain was leakage", which the data do
+run would have been reported as "69% of the gain was leakage", which the data do
 not support.
 
-**What the ablation does not establish.** `text-only, ablated` still scores 0.482,
+**What the ablation does not establish.** `text-only, ablated` still scores 0.483,
 well above the 0.291 floor, so the filtered prose remains far from
 information-free about localization. Some of that is genuine function signal and
 some is residual leakage the vocabulary missed; this design cannot separate them.
@@ -268,7 +273,7 @@ bound it: 5.3% of surviving texts still say "membrane" and 4.6% still say
 
 ## Limitations
 
-- About an eighth of the free-text gain is label leakage, now measured rather than
+- About a seventh of the free-text gain is label leakage, now measured rather than
   assumed. The residual is bounded but not zero: see the sentinel counts in
   [ablation.md](ablation.md).
 - The ablation removes whole sentences, so it cannot separate a clause naming a
@@ -278,7 +283,7 @@ bound it: 5.3% of surviving texts still say "membrane" and 4.6% still say
   localization sentences are slightly longer than average, so it retains 85.1% of
   characters against the ablation's 83.6%; that 1.5-point gap flatters the ablated
   arm's comparison very slightly.
-- Three seeds is thin for a *ratio* like "32% of the gain survives", whose
+- Three seeds is thin for a *ratio* like "31% of the gain survives", whose
   uncertainty is wider than either endpoint's. The per-seed sign test is what the
   leakage claim rests on, not the ratio's precision.
 - One encoder pair (ESM-2 35M, all-MiniLM-L6-v2), one head configuration, one

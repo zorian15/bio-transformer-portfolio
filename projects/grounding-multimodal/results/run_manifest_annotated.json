@@ -1,5 +1,5 @@
 {
-  "duration_seconds": 97.722,
+  "duration_seconds": 91.819,
   "environment": {
     "device": "mps",
     "machine": "arm64",
@@ -18,10 +18,10 @@
   },
   "git": {
     "branch": "5-ablate-localization-sentences",
-    "commit": "738693289668a838be68bcd05bdb1cf31f762118",
+    "commit": "47be6efd05f1d307466cf733807424d519fb5260",
     "dirty": true
   },
-  "log_file": "logs/run-arms-20260731T144111Z.log",
+  "log_file": "logs/run-arms-20260731T151218Z.log",
   "params": {
     "annotated_only": true,
     "data_root": "/Users/zo/projects/personal/bio-transformer-portfolio/data",
@@ -31,10 +31,10 @@
   "records": {
     "ablation": {
       "characters": {
-        "after": 4480738,
-        "before": 5362266,
-        "corpus_retention": 0.8356053205864834,
-        "retention_mean": 0.8284374278987012,
+        "after": 4480692,
+        "before": 5362219,
+        "corpus_retention": 0.8356040661524641,
+        "retention_mean": 0.8284368027231943,
         "retention_median": 1.0,
         "retention_p10": 0.25801282051282054
       },
@@ -121,8 +121,8 @@
         "share": 0.30627277047362583
       },
       "random_control_retention": {
-        "ablated_retention": 0.8356053205864834,
-        "random_retention": 0.7898507832323126
+        "ablated_retention": 0.8356040661524641,
+        "random_retention": 0.7898910879992033
       },
       "removals_by_term": {
         "amyloplast": 5,
@@ -230,9 +230,9 @@
         "vesicle": 130
       },
       "sentences": {
-        "before": 46361,
-        "removed": 6273,
-        "share": 0.13530769396691184
+        "before": 46371,
+        "removed": 6274,
+        "share": 0.13530007979124883
       }
     },
     "ablation_lexicon_version": 1,
@@ -252,6 +252,68 @@
     "cohort": "annotated subset",
     "embed_batch_size": 8,
     "majority_class_accuracy": 0.3047,
+    "per_seed_macro_f1": {
+      "sequence+free-text": {
+        "0": 0.7467,
+        "1": 0.749,
+        "2": 0.7531
+      },
+      "sequence+free-text-ablated": {
+        "0": 0.6693,
+        "1": 0.6538,
+        "2": 0.6701
+      },
+      "sequence+free-text-cleaned": {
+        "0": 0.7501,
+        "1": 0.7533,
+        "2": 0.7498
+      },
+      "sequence+free-text-random-ablated": {
+        "0": 0.6636,
+        "1": 0.6711,
+        "2": 0.6679
+      },
+      "sequence+structured": {
+        "0": 0.8992,
+        "1": 0.9094,
+        "2": 0.9009
+      },
+      "sequence-only": {
+        "0": 0.6268,
+        "1": 0.6128,
+        "2": 0.6181
+      },
+      "shuffled-text-control": {
+        "0": 0.5916,
+        "1": 0.5908,
+        "2": 0.5827
+      },
+      "text-only-free": {
+        "0": 0.6758,
+        "1": 0.6645,
+        "2": 0.6519
+      },
+      "text-only-free-ablated": {
+        "0": 0.5166,
+        "1": 0.5059,
+        "2": 0.4932
+      },
+      "text-only-free-cleaned": {
+        "0": 0.6714,
+        "1": 0.6635,
+        "2": 0.6719
+      },
+      "text-only-free-random-ablated": {
+        "0": 0.5482,
+        "1": 0.5477,
+        "2": 0.5433
+      },
+      "text-only-structured": {
+        "0": 0.9103,
+        "1": 0.9143,
+        "2": 0.9072
+      }
+    },
     "proteins": 12626,
     "result_sequence+free-text": {
       "accuracy": 0.8448,
@@ -260,22 +322,22 @@
       "macro_f1_sd": 0.0033
     },
     "result_sequence+free-text-ablated": {
-      "accuracy": 0.8164,
-      "accuracy_sd": 0.001,
-      "macro_f1": 0.661,
-      "macro_f1_sd": 0.0086
+      "accuracy": 0.8161,
+      "accuracy_sd": 0.0007,
+      "macro_f1": 0.6644,
+      "macro_f1_sd": 0.0092
     },
     "result_sequence+free-text-cleaned": {
-      "accuracy": 0.8495,
-      "accuracy_sd": 0.002,
-      "macro_f1": 0.7517,
-      "macro_f1_sd": 0.0028
+      "accuracy": 0.8496,
+      "accuracy_sd": 0.0012,
+      "macro_f1": 0.7511,
+      "macro_f1_sd": 0.0019
     },
     "result_sequence+free-text-random-ablated": {
-      "accuracy": 0.8222,
-      "accuracy_sd": 0.0032,
-      "macro_f1": 0.6674,
-      "macro_f1_sd": 0.0048
+      "accuracy": 0.822,
+      "accuracy_sd": 0.0022,
+      "macro_f1": 0.6676,
+      "macro_f1_sd": 0.0038
     },
     "result_sequence+structured": {
       "accuracy": 0.9384,
@@ -302,22 +364,22 @@
       "macro_f1_sd": 0.0119
     },
     "result_text-only-free-ablated": {
-      "accuracy": 0.6835,
-      "accuracy_sd": 0.001,
-      "macro_f1": 0.5077,
-      "macro_f1_sd": 0.0101
+      "accuracy": 0.6821,
+      "accuracy_sd": 0.0013,
+      "macro_f1": 0.5052,
+      "macro_f1_sd": 0.0117
     },
     "result_text-only-free-cleaned": {
-      "accuracy": 0.7543,
-      "accuracy_sd": 0.0032,
-      "macro_f1": 0.668,
-      "macro_f1_sd": 0.0048
+      "accuracy": 0.7547,
+      "accuracy_sd": 0.0034,
+      "macro_f1": 0.6689,
+      "macro_f1_sd": 0.0047
     },
     "result_text-only-free-random-ablated": {
       "accuracy": 0.6997,
-      "accuracy_sd": 0.0056,
-      "macro_f1": 0.5461,
-      "macro_f1_sd": 0.0031
+      "accuracy_sd": 0.0046,
+      "macro_f1": 0.5464,
+      "macro_f1_sd": 0.0027
     },
     "result_text-only-structured": {
       "accuracy": 0.9341,
@@ -343,171 +405,171 @@
     "text_batch_size": 64
   },
   "run": "run-arms",
-  "started_at": "2026-07-31T14:41:11+00:00",
+  "started_at": "2026-07-31T15:12:18+00:00",
   "status": "completed",
   "steps": [
     {
-      "duration_seconds": 0.039,
+      "duration_seconds": 0.038,
       "name": "load prepared table"
     },
     {
-      "duration_seconds": 4.02,
+      "duration_seconds": 5.894,
       "name": "derive text variants"
     },
     {
-      "duration_seconds": 0.107,
+      "duration_seconds": 0.106,
       "name": "build feature blocks"
     },
     {
-      "duration_seconds": 1.579,
+      "duration_seconds": 1.846,
       "name": "summarize the ablation"
     },
     {
-      "duration_seconds": 5.274,
+      "duration_seconds": 3.771,
       "name": "seed 0: sequence-only"
     },
     {
-      "duration_seconds": 2.887,
+      "duration_seconds": 1.892,
       "name": "seed 0: text-only-free"
     },
     {
-      "duration_seconds": 2.468,
+      "duration_seconds": 1.429,
       "name": "seed 0: text-only-structured"
     },
     {
-      "duration_seconds": 2.027,
+      "duration_seconds": 2.025,
       "name": "seed 0: sequence+free-text"
     },
     {
-      "duration_seconds": 2.212,
+      "duration_seconds": 2.825,
       "name": "seed 0: sequence+structured"
     },
     {
-      "duration_seconds": 2.267,
+      "duration_seconds": 2.562,
       "name": "seed 0: shuffled-text-control"
     },
     {
-      "duration_seconds": 3.313,
+      "duration_seconds": 4.11,
       "name": "seed 0: text-only-free-cleaned"
     },
     {
-      "duration_seconds": 3.19,
+      "duration_seconds": 1.793,
       "name": "seed 0: text-only-free-ablated"
     },
     {
-      "duration_seconds": 2.698,
+      "duration_seconds": 1.504,
       "name": "seed 0: text-only-free-random-ablated"
     },
     {
-      "duration_seconds": 2.013,
+      "duration_seconds": 2.132,
       "name": "seed 0: sequence+free-text-cleaned"
     },
     {
-      "duration_seconds": 1.94,
+      "duration_seconds": 2.948,
       "name": "seed 0: sequence+free-text-ablated"
     },
     {
-      "duration_seconds": 1.955,
+      "duration_seconds": 2.428,
       "name": "seed 0: sequence+free-text-random-ablated"
     },
     {
-      "duration_seconds": 2.101,
+      "duration_seconds": 1.381,
       "name": "seed 1: sequence-only"
     },
     {
-      "duration_seconds": 2.661,
+      "duration_seconds": 1.718,
       "name": "seed 1: text-only-free"
     },
     {
-      "duration_seconds": 2.895,
+      "duration_seconds": 1.613,
       "name": "seed 1: text-only-structured"
     },
     {
-      "duration_seconds": 2.016,
+      "duration_seconds": 1.964,
       "name": "seed 1: sequence+free-text"
     },
     {
-      "duration_seconds": 2.051,
+      "duration_seconds": 2.595,
       "name": "seed 1: sequence+structured"
     },
     {
-      "duration_seconds": 1.987,
+      "duration_seconds": 2.407,
       "name": "seed 1: shuffled-text-control"
     },
     {
-      "duration_seconds": 2.575,
+      "duration_seconds": 3.271,
       "name": "seed 1: text-only-free-cleaned"
     },
     {
-      "duration_seconds": 2.29,
+      "duration_seconds": 1.943,
       "name": "seed 1: text-only-free-ablated"
     },
     {
-      "duration_seconds": 2.269,
+      "duration_seconds": 1.724,
       "name": "seed 1: text-only-free-random-ablated"
     },
     {
-      "duration_seconds": 1.971,
+      "duration_seconds": 2.012,
       "name": "seed 1: sequence+free-text-cleaned"
     },
     {
-      "duration_seconds": 2.081,
+      "duration_seconds": 2.298,
       "name": "seed 1: sequence+free-text-ablated"
     },
     {
-      "duration_seconds": 1.911,
+      "duration_seconds": 1.944,
       "name": "seed 1: sequence+free-text-random-ablated"
     },
     {
-      "duration_seconds": 3.094,
+      "duration_seconds": 1.735,
       "name": "seed 2: sequence-only"
     },
     {
-      "duration_seconds": 2.463,
+      "duration_seconds": 1.781,
       "name": "seed 2: text-only-free"
     },
     {
-      "duration_seconds": 3.137,
+      "duration_seconds": 1.719,
       "name": "seed 2: text-only-structured"
     },
     {
-      "duration_seconds": 2.757,
+      "duration_seconds": 3.007,
       "name": "seed 2: sequence+free-text"
     },
     {
-      "duration_seconds": 2.898,
+      "duration_seconds": 3.122,
       "name": "seed 2: sequence+structured"
     },
     {
-      "duration_seconds": 2.6,
+      "duration_seconds": 2.866,
       "name": "seed 2: shuffled-text-control"
     },
     {
-      "duration_seconds": 3.301,
+      "duration_seconds": 4.359,
       "name": "seed 2: text-only-free-cleaned"
     },
     {
-      "duration_seconds": 3.336,
+      "duration_seconds": 1.929,
       "name": "seed 2: text-only-free-ablated"
     },
     {
-      "duration_seconds": 2.782,
+      "duration_seconds": 1.544,
       "name": "seed 2: text-only-free-random-ablated"
     },
     {
-      "duration_seconds": 2.032,
+      "duration_seconds": 2.313,
       "name": "seed 2: sequence+free-text-cleaned"
     },
     {
-      "duration_seconds": 2.063,
+      "duration_seconds": 2.474,
       "name": "seed 2: sequence+free-text-ablated"
     },
     {
-      "duration_seconds": 2.126,
+      "duration_seconds": 2.469,
       "name": "seed 2: sequence+free-text-random-ablated"
     },
     {
-      "duration_seconds": 0.003,
+      "duration_seconds": 0.006,
       "name": "write results"
     }
   ]

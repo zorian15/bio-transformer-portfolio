@@ -121,6 +121,34 @@ def test_split_sentences_does_not_break_on_abbreviations(text: str) -> None:
     assert text_ablation.split_sentences(text) == [text]
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Binds MAVS. Activates the kinase.", ["Binds MAVS.", "Activates the kinase."]),
+        (
+            "Recruits CTCF. Represses transcription.",
+            ["Recruits CTCF.", "Represses transcription."],
+        ),
+        (
+            "Regulates petC. Controls transport.",
+            ["Regulates petC.", "Controls transport."],
+        ),
+        ("Cleaves Asp. Then releases it.", ["Cleaves Asp.", "Then releases it."]),
+    ],
+)
+def test_split_sentences_does_not_find_abbreviations_inside_words(
+    text: str, expected: list[str]
+) -> None:
+    """A gene name ending in an abbreviation is not an abbreviation.
+
+    `vs.` sits inside `MAVS.` and `etc.` inside `petC.`. Matching them there both
+    swallowed a real sentence boundary and, because the replacement was a lowercase
+    literal under IGNORECASE, rewrote the gene name itself (`MAVS.` to `MAvs.`).
+    Silent mutation of the input is the exact failure this module exists to avoid.
+    """
+    assert text_ablation.split_sentences(text) == expected
+
+
 def test_split_sentences_does_not_break_on_decimal_numbers() -> None:
     """293 descriptions contain a decimal; splitting one fragments the claim."""
     text = "Reduces activity 2.5-fold at pH 7.4 under oxidative stress."

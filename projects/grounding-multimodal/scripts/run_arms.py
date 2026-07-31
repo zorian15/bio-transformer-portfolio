@@ -864,6 +864,24 @@ def main() -> int:
                     },
                 )
 
+            # Per-seed macro-F1, not just the mean and spread. The ablation's
+            # leakage claim rests on a paired comparison: the ablated arm sits
+            # below its length-matched control in every seed, by less than either
+            # arm's own standard deviation. Aggregates cannot show that, so
+            # without these numbers the claim would cite a run log that git does
+            # not keep. See the CLAUDE.md run-logging convention.
+            run.record(
+                "per_seed_macro_f1",
+                {
+                    arm.name: {
+                        str(result["seed"]): round(result["macro_f1"], 4)
+                        for result in runs
+                        if result["arm"] == arm.name
+                    }
+                    for arm in ARMS
+                },
+            )
+
         # A copy of the manifest beside the committed metrics, so a number in the
         # writeup can be traced to the commit and device that produced it. Deferred
         # to run exit so the copy records the final status rather than "running".

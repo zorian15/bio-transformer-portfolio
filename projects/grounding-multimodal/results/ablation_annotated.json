@@ -1,9 +1,9 @@
 {
   "characters": {
-    "after": 4480738,
-    "before": 5362266,
-    "corpus_retention": 0.8356053205864834,
-    "retention_mean": 0.8284374278987012,
+    "after": 4480692,
+    "before": 5362219,
+    "corpus_retention": 0.8356040661524641,
+    "retention_mean": 0.8284368027231943,
     "retention_median": 1.0,
     "retention_p10": 0.25801282051282054
   },
@@ -90,8 +90,8 @@
     "share": 0.30627277047362583
   },
   "random_control_retention": {
-    "ablated_retention": 0.8356053205864834,
-    "random_retention": 0.7898507832323126
+    "ablated_retention": 0.8356040661524641,
+    "random_retention": 0.7898910879992033
   },
   "removals_by_term": {
     "amyloplast": 5,
@@ -199,8 +199,8 @@
     "vesicle": 130
   },
   "sentences": {
-    "before": 46361,
-    "removed": 6273,
-    "share": 0.13530769396691184
+    "before": 46371,
+    "removed": 6274,
+    "share": 0.13530007979124883
   }
 }

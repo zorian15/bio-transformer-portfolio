@@ -250,9 +250,10 @@ def plot_ablation(arms_csv: Path, out_path: Path) -> Path:
     baseline = float(rows["sequence-only"]["macro_f1"])
     ablated = float(rows["sequence+free-text-ablated"]["macro_f1"])
     control = float(rows["sequence+free-text-random-ablated"]["macro_f1"])
-    # The claim the figure makes: what survives the ablation, measured against the
-    # length-matched control rather than against the unfiltered arm, because the
-    # control absorbs the cost of removing text at all.
+    # Both shares are of the *unfiltered* gain, which is what the title compares
+    # them as: "the ablation keeps X%, removing as much at random keeps Y%". The
+    # gap between the two is the part attributable to the compartment vocabulary,
+    # and putting them on one denominator is what makes that gap readable.
     survives = (ablated - baseline) / (grounded - baseline)
 
     names, values, errors, colors = [], [], [], []

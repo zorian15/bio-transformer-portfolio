@@ -44,7 +44,11 @@ import numpy as np
 # a fifth of each field's characters, so they displace real text under a sentence
 # encoder's token limit. See docs/grounding-multimodal/data.md.
 EVIDENCE_CODES = re.compile(r"\{ECO:[^}]*\}")
-INLINE_CITATIONS = re.compile(r"\((?:PubMed|Ref\.)[^)]*\)")
+# Any parenthetical holding a PubMed or ECO reference is a citation, wherever the
+# reference sits inside it. Anchoring on the opening paren instead would miss
+# `(see PubMed:123)`, and would leave `(, PubMed:456)` behind once an ECO block
+# earlier in the same parenthetical had already been stripped.
+INLINE_CITATIONS = re.compile(r"\([^()]*(?:PubMed:|ECO:|Ref\.)[^()]*\)")
 FUNCTION_PREFIX = re.compile(r"FUNCTION:\s*")
 
 # Parenthetical evidence qualifiers, which say how confident the curator is rather
@@ -98,6 +102,12 @@ def clean_annotation_text(text: str) -> str:
     and the stray `"."` survives as a sentence of its own. That fragment inflates
     the sentence count and, worse, keeps a fully ablated protein looking non-empty,
     which is exactly the statistic the ablation turns on.
+
+    A handful of entries (4 of 12,626 here) cite a reference in running prose,
+    "According to PubMed:18817736, shows only specificity for ...". Those are left
+    alone deliberately: the citation is the clause's subject, so deleting the token
+    leaves broken grammar, and there is no reading of that sentence that drops it
+    cleanly. Only bracketed citations are removed.
     """
     assert not any(
         mark in text for mark in _PROTECTED.values()
@@ -137,9 +147,14 @@ def split_sentences(text: str) -> list[str]:
 
     protected = text
     for abbreviation in ABBREVIATIONS:
+        # The lookbehind is load-bearing, and so is replacing via the matched text
+        # rather than the literal. Without the boundary, `vs.` matches inside
+        # `MAVS.` and `etc.` inside `petC.`, which both suppresses a real sentence
+        # boundary and, because the replacement was a lowercase literal under
+        # IGNORECASE, silently rewrote gene names (`MAVS.` became `MAvs.`).
         protected = re.sub(
-            re.escape(abbreviation),
-            abbreviation.replace(".", _PROTECTED["."]),
+            rf"(?<!\w){re.escape(abbreviation)}",
+            lambda match: match.group(0).replace(".", _PROTECTED["."]),
             protected,
             flags=re.IGNORECASE,
         )

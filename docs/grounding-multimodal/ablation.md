@@ -123,7 +123,7 @@ Over the 12,626 annotated proteins:
 | | |
 |---|---:|
 | Proteins losing at least one sentence | 3,867 (30.6%) |
-| Sentences removed | 6,273 of 46,361 (13.5%) |
+| Sentences removed | 6,274 of 46,371 (13.5%) |
 | Characters retained across the corpus | 83.6% |
 | Median per-protein retention | 100% |
 | 10th-percentile per-protein retention | 25.8% |
@@ -200,7 +200,7 @@ look like it. Treat that row as a loose upper bound rather than a measurement.
 **3. The text-only ablated arm (any residual signal).** This is the strongest of
 the three and costs nothing, because the arm is in the table anyway. A word list
 finds only enumerated synonyms; a classifier trained on ablated text alone finds
-*any* residual signal, including phrasings nobody thought to list. It scores 0.482
+*any* residual signal, including phrasings nobody thought to list. It scores 0.483
 macro-F1, well above the 0.291 majority floor, so the ablated prose is far from
 information-free about localization. Some of that is genuine function signal and
 some is residual leakage, and this arm cannot separate them, but it does bound the
