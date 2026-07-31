@@ -11,20 +11,25 @@ name: embedding-anchor
 # a narrower trigger. See issue #8.
 
 on:
+  # Every pull request, deliberately unfiltered.
+  #
+  # A `paths:` filter would be cheaper, and an earlier version had one covering
+  # src/biotp/**, the test file, tests/data/, and the dependency manifests. It
+  # had to go, because this check is a *required* one on main: a required check
+  # that never reports leaves the pull request waiting on it forever, so a
+  # docs-only change would be unmergeable rather than skipped. Running always is
+  # the cost of being able to enforce it, and a warm cache makes it under a
+  # minute.
+  #
+  # It also removes a judgement call. The filter had already been widened once
+  # after review, because `get_device` lives in utils.py and decides which
+  # backend produces the vectors: the set of files that can move an embedding is
+  # wider than it looks, and keeping that list correct was itself a thing to
+  # remember.
   pull_request:
-    paths:
-      # The whole package, not just embeddings.py: `get_device` lives in utils
-      # and decides which backend produces the vectors, so the numbers can move
-      # from outside the file that pools them.
-      - src/biotp/**
-      - tests/test_embeddings.py
-      - tests/data/**
-      - environment.yml
-      - pyproject.toml
-      - .github/workflows/embedding-anchor.yml
-  # Weekly, because the per-PR filter only catches changes made here. This
-  # catches drift from underneath: a new fair-esm, a re-uploaded checkpoint.
-  # Note GitHub disables scheduled runs after 60 days of repository inactivity.
+  # Catches drift from underneath rather than from a change here: a new
+  # fair-esm, a re-uploaded checkpoint. Note GitHub disables scheduled runs
+  # after 60 days of repository inactivity.
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
