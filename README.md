@@ -57,5 +57,15 @@ One-time setup:
 
 Then `biotp.release.push_to_hub(...)` can upload. Hosting public models and datasets is free, and large files are handled automatically via Git LFS.
 
-## Docs and writeups (planned, not built yet)
-A `docs/` folder will hold each project's writeup as a short research report, published via GitHub Pages (gh-pages) so the reports are browsable on the web. The intent is to link them from the portfolio tab of the personal site (zorian15.github.io). This is a later step; see PLANNING.md for where it sits in the roadmap.
+## Docs and writeups
+`docs/` holds each project's writeup as a short research report, built into a browsable site with [MkDocs](https://www.mkdocs.org/) and its `readthedocs` theme: sidebar navigation, prev/next paging above and below each page, and full-text search. Metrics are defined mathematically (MathJax via `pymdownx.arithmatex`), and the headline tables are paired with figures.
+
+```bash
+mamba activate biollm
+mkdocs serve     # live preview at http://127.0.0.1:8000
+mkdocs build     # static site into site/ (gitignored)
+```
+
+Pushing to `main` builds and publishes to GitHub Pages via `.github/workflows/docs.yml`; pull requests build in strict mode but do not publish, so a broken link fails review rather than the live site. Each project's `DECISION_LOG.md` is symlinked into `docs/` and appears in the site as that project's experiment log, so the log has one home and two readers.
+
+Still to do: link the published site from the portfolio tab of the personal site (zorian15.github.io). See PLANNING.md.

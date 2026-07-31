@@ -83,6 +83,72 @@ dropout active or gradients enabled.
 macro- or micro-averaged precision, recall, and F1. `per_class_f1` gives the
 per-compartment breakdown, and `majority_class_accuracy` gives the floor.
 
+### Definitions
+
+Take \(N\) test proteins, true labels \(y_i\) and predictions \(\hat{y}_i\) drawn
+from \(C = 10\) compartments. For a class \(c\), count the true positives, false
+positives and false negatives:
+
+\[
+\mathrm{TP}_c = \sum_{i=1}^{N} \mathbb{1}[y_i = c \wedge \hat{y}_i = c],
+\quad
+\mathrm{FP}_c = \sum_{i=1}^{N} \mathbb{1}[y_i \neq c \wedge \hat{y}_i = c],
+\quad
+\mathrm{FN}_c = \sum_{i=1}^{N} \mathbb{1}[y_i = c \wedge \hat{y}_i \neq c].
+\]
+
+**Accuracy** is the fraction of proteins placed in the right compartment:
+
+\[
+\mathrm{Acc} = \frac{1}{N} \sum_{i=1}^{N} \mathbb{1}[y_i = \hat{y}_i].
+\]
+
+**Per-class F1** is the harmonic mean of precision and recall for that class:
+
+\[
+P_c = \frac{\mathrm{TP}_c}{\mathrm{TP}_c + \mathrm{FP}_c},
+\qquad
+R_c = \frac{\mathrm{TP}_c}{\mathrm{TP}_c + \mathrm{FN}_c},
+\qquad
+F1_c = 2 \cdot \frac{P_c \cdot R_c}{P_c + R_c}.
+\]
+
+**Macro-F1**, the headline metric, averages those per-class scores with equal
+weight per class rather than per protein:
+
+\[
+\text{macro-}F1 = \frac{1}{C} \sum_{c=1}^{C} F1_c.
+\]
+
+That unweighted average is the whole point. The classes are imbalanced 26-fold
+(Nucleus 29.2% against Peroxisome 1.1%), so a protein-weighted average would let
+a model that ignores the rare compartments entirely still score well. Under
+macro-F1, Peroxisome and Nucleus each carry \(1/10\) of the score, and failing a
+rare class costs as much as failing a common one.
+
+**Balanced accuracy** is the same rebalancing applied to recall alone, which
+makes it macro-recall:
+
+\[
+\mathrm{BalAcc} = \frac{1}{C} \sum_{c=1}^{C} R_c.
+\]
+
+**The majority-class floor** is what a model scores by always predicting the most
+common compartment, and is the number every arm has to beat to mean anything:
+
+\[
+\mathrm{Acc}_{\text{majority}} = \frac{1}{N} \max_{c} \sum_{i=1}^{N} \mathbb{1}[y_i = c].
+\]
+
+On this test split that is 0.291 (Nucleus). Note it is an *accuracy* floor, not a
+macro-F1 floor: a constant predictor scores macro-F1 \(\approx 0.045\), since it
+earns a nonzero \(F1_c\) on one class out of ten.
+
+Where a metric carries \(\pm\), it is the standard deviation across the three
+seeds, not a confidence interval over proteins. It measures pipeline sensitivity
+to initialization and split, which is the quantity that decides whether an arm
+gap is real.
+
 Two deliberate omissions and one substitution:
 
 - **AUROC is absent.** It needs predicted scores, and these functions take hard

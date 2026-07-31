@@ -1,0 +1,85 @@
+site_name: bio-transformer-portfolio
+site_description: >-
+  Three small, openly-released transformer-and-biology experiments: grounding
+  protein representations in text, a DMS benchmark, and a TCR/antibody language
+  model.
+site_author: Zorian Thornton
+site_url: https://zorian15.github.io/bio-transformer-portfolio/
+
+repo_url: https://github.com/zorian15/bio-transformer-portfolio
+repo_name: zorian15/bio-transformer-portfolio
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: readthedocs
+  highlightjs: true
+  hljs_languages:
+    - python
+    - yaml
+    - bash
+  # The whole tree stays visible in the sidebar instead of collapsing to the
+  # current page's section, so the reports are browsable without clicking around.
+  collapse_navigation: false
+  sticky_navigation: true
+  navigation_depth: 3
+  titles_only: false
+  # Prev/next paging above and below the content, not only at the bottom.
+  prev_next_buttons_location: both
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  # generic: true emits plain \(...\) and \[...\] for MathJax rather than
+  # relying on a script-tag renderer, which is what makes the metric definitions
+  # render under a theme that ships no math support of its own.
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+
+# Broken internal links fail the build rather than shipping a dead link.
+validation:
+  links:
+    absolute_links: relative_to_docs
+    unrecognized_links: warn
+
+nav:
+  - Home: README.md
+  - Shared infrastructure:
+      - Run logging: run-logging.md
+      - Embedding cache: embedding-cache.md
+  - "Project 1: grounding-multimodal":
+      - Introduction: grounding-multimodal/introduction.md
+      - Data: grounding-multimodal/data.md
+      - Method: grounding-multimodal/method.md
+      - Results: grounding-multimodal/results.md
+      - Experiment log: grounding-multimodal/decision-log.md
+  - "Project 2: dms-benchmark":
+      - Experiment log: dms-benchmark/decision-log.md
+  - "Project 3: tcr-antibody-lm":
+      - Experiment log: tcr-antibody-lm/decision-log.md

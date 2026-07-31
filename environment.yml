@@ -32,3 +32,10 @@ dependencies:
       - ruff
       - mypy
       - pytest
+      # Docs site (mkdocs build / mkdocs serve). The readthedocs theme ships
+      # with mkdocs itself, so no theme package is needed; pymdown-extensions
+      # supplies arithmatex (the metric equations) and superfences.
+      # Pinned below 2.0, which removes the plugin and theming systems with no
+      # migration path and would break mkdocs.yml at the next env rebuild.
+      - mkdocs>=1.6,<2
+      - pymdown-extensions>=10,<12

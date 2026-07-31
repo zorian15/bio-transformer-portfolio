@@ -1,7 +1,7 @@
 # Data: inputs, labels, and splits
 
 Everything below is produced by
-[`projects/grounding-multimodal/scripts/prepare_data.py`](../../projects/grounding-multimodal/scripts/prepare_data.py),
+[`projects/grounding-multimodal/scripts/prepare_data.py`](https://github.com/zorian15/bio-transformer-portfolio/blob/main/projects/grounding-multimodal/scripts/prepare_data.py),
 which writes a single table to `data/processed/deeploc_annotated.parquet`, one row
 per protein. Raw downloads and processed tables are gitignored; the script
 regenerates them. Counts on this page come from the build of 2026-07-29.

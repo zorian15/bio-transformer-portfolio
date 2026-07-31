@@ -85,8 +85,12 @@ Lives in `projects/tcr-antibody-lm/`. Points the same machinery at adaptive-immu
 - Short writeup (blog or short arXiv note); honest results, including negatives.
 - A concise, linkable summary of what was trained and released.
 
-## Docs and hosting (planned, later step)
-Each project's writeup should live in a `docs/` folder as a short research report, published via GitHub Pages (gh-pages) so the reports are browsable on the web. Longer term, link these from the portfolio tab of the personal site (zorian15.github.io). Not built yet; revisit once the first project has a result worth writing up. The per-project `DECISION_LOG.md` files are the raw material for these reports.
+## Docs and hosting
+Each project's writeup lives in `docs/` as a short research report. These are built into a browsable site with MkDocs and its `readthedocs` theme (`mkdocs.yml`), giving sidebar navigation, prev/next paging, and full-text search over the reports. `.github/workflows/docs.yml` publishes to GitHub Pages on every push to `main` and builds pull requests in strict mode without publishing, so broken internal links fail CI instead of shipping.
+
+The per-project `DECISION_LOG.md` files remain the raw material for these reports, and each is symlinked into `docs/` so it appears in the site as that project's experiment log without being duplicated.
+
+Remaining: link the published site from the portfolio tab of the personal site (zorian15.github.io).
 
 ## Open questions to resolve before starting
 - Use a clean public benchmark (ProteinGym, DeepLoc, VDJdb) or bring an in-house viral DMS dataset for a domain-flavored version?

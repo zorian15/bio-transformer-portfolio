@@ -41,6 +41,15 @@ The embedding cache key covers the inputs **and** the code that shapes them, via
 - Prefer assertions over silent failures; fail loudly on unexpected inputs.
 - When adding a parameter to an existing function, do not give it a default; let old call sites break so they are caught.
 
+## Docs site
+- `docs/` is built into a MkDocs site by `mkdocs.yml`, using the `readthedocs` theme that ships with mkdocs. Preview with `mkdocs serve`; `site/` is gitignored.
+- **Any page added to `docs/` must also be added to the `nav:` block in `mkdocs.yml`**, or it builds but is unreachable from the sidebar.
+- CI runs `mkdocs build --strict`, so a broken internal link fails the build. Link to files outside `docs/` (scripts, `PLANNING.md`) by absolute GitHub URL, since relative paths escaping `docs_dir` cannot resolve on the site.
+- Each project's `DECISION_LOG.md` is symlinked in as `docs/<project>/decision-log.md`. Edit the real file under `projects/`, never the symlink, and keep those logs free of relative Markdown links, which would resolve differently in the two locations.
+- `mkdocs` is pinned `<2` in `environment.yml`: MkDocs 2.0 drops the plugin and theming systems with no migration path, so unpinning would break this config at the next env rebuild.
+- **Figures are generated, never hand-drawn.** `projects/grounding-multimodal/scripts/make_figures.py` reads the committed `results/*.csv` and `results/*.json` and writes SVG into `docs/<project>/figures/`. Re-run it whenever those results change, and commit the SVGs; CI builds the docs without matplotlib and will serve whatever is in git. A figure that disagrees with the table beside it means the script was not re-run.
+- Metrics cited in a writeup get a mathematical definition, via `pymdownx.arithmatex` (`\(...\)` inline, `\[...\]` display). `docs/grounding-multimodal/method.md` is the pattern to follow.
+
 ## Writing conventions (READMEs, writeups, model cards)
 - No prose em-dashes; use commas, semicolons, or colons. Keep en-dash ranges and compound modifiers.
 - Report results honestly, including negative results. A clean "it did not help, and here is why" is a legitimate deliverable.

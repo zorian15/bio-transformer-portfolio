@@ -1,32 +1,71 @@
-# docs/
+# bio-transformer-portfolio
 
-Short research reports, one per project. These are written as the work happens, so
-they stay honest about what is settled and what is still open.
+Three small, openly-released transformer-and-biology experiments. These are short
+research reports, written as the work happens, so they stay honest about what is
+settled and what is still open.
 
-Publishing to GitHub Pages (`gh-pages`) is planned but not set up yet; for now
-these are plain Markdown files read in the repo. See `PLANNING.md`.
+Each project ships public code, weights and a model card on the Hugging Face Hub,
+and a writeup whose headline is the honest answer, including a clean null result
+if that is what happens.
 
-## Shared infrastructure
+## Where to start
 
-- [Run logging](run-logging.md): how pipeline runs are logged, and the manifest
-  each one writes for provenance.
-- [Embedding cache](embedding-cache.md): what invalidates a cached embedding, why
-  the key covers the code and not only the inputs, and the one part that still
-  needs a human.
+If you want the science, read
+[Project 1's introduction](grounding-multimodal/introduction.md) and then
+[its results](grounding-multimodal/results.md). If you want the machinery the
+experiments run on, read [run logging](run-logging.md) and the
+[embedding cache](embedding-cache.md).
 
-## Project 1: grounding-multimodal
+Each project also keeps an **experiment log**: a chronological record of runs and
+the decisions they drove, newest first. The reports describe the setup; the logs
+record what actually happened, including the wrong turns.
 
-- [Introduction](grounding-multimodal/introduction.md): the question, why it is
-  interesting biologically and as a machine-learning problem, and how it will be
-  judged.
-- [Data](grounding-multimodal/data.md): inputs, labels, provenance, preprocessing
-  decisions, and the train/validation/test split.
-- [Results](grounding-multimodal/results.md): the six-arm numbers, what the control
-  shows, and what is still unresolved.
-- [Method](grounding-multimodal/method.md): how splits are made, what the trained
-  head is, the metrics, and how the six-arm runner keeps the comparison fair.
+## Status
 
-The corresponding experiment log is
-[`projects/grounding-multimodal/DECISION_LOG.md`](../projects/grounding-multimodal/DECISION_LOG.md),
-which records individual runs and the decisions they drove. These docs describe
-the setup; the log records what happened.
+| Project | Reports | Experiment log |
+|---|---|---|
+| 1. grounding-multimodal | Introduction, Data, Method, Results | [Log](grounding-multimodal/decision-log.md) |
+| 2. dms-benchmark | Not started | [Log](dms-benchmark/decision-log.md) |
+| 3. tcr-antibody-lm | Not started | [Log](tcr-antibody-lm/decision-log.md) |
+
+Build order follows the project numbering, and Projects 2 and 3 have not begun,
+so their logs currently hold only the entry template. Scope and sequencing live
+in [`PLANNING.md`](https://github.com/zorian15/bio-transformer-portfolio/blob/main/PLANNING.md).
+
+## Current headline result
+
+Project 1 asks whether grounding a protein-sequence representation in text
+improves subcellular localization over sequence alone, and whether any gain
+survives controls that rule out label leakage.
+
+Adding free-text function annotations to a frozen ESM-2 representation improves
+macro-F1 from 0.617 to 0.740, roughly 15x the seed spread, and a shuffled-text
+control lands *below* sequence-only. So the gain is tied to each protein's own
+annotation rather than to the extra dimensions.
+
+That is the narrow claim, and it holds. The broader claim, that this is
+*grounding* rather than annotations quietly restating the label, is
+[not yet supported](grounding-multimodal/results.md#interpretation): the
+structured-annotation arm reaches 0.912 by stating the answer outright, and free
+text sits between that and sequence-only. The experiment that decides it is
+ablating localization-stating sentences and re-running.
+
+## Reading these locally
+
+The site is built with [MkDocs](https://www.mkdocs.org/) and its `readthedocs`
+theme:
+
+```bash
+mamba activate biollm
+mkdocs serve      # live-reloading preview at http://127.0.0.1:8000
+mkdocs build      # static site into site/ (gitignored)
+```
+
+Figures are generated from the committed result files, not drawn by hand, so a
+plot cannot drift from the table beside it:
+
+```bash
+python projects/grounding-multimodal/scripts/make_figures.py
+```
+
+Pushing to `main` deploys the site to GitHub Pages automatically.

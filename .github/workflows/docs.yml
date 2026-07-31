@@ -1,0 +1,54 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Docs need only mkdocs, not the full biollm env, so CI does not pay for a
+      # conda solve and a PyTorch download to render Markdown. Pins match
+      # environment.yml, so CI and a local `mkdocs serve` agree.
+      - run: pip install 'mkdocs>=1.6,<2' 'pymdown-extensions>=10,<12'
+
+      # --strict turns broken internal links and other warnings into failures.
+      # Figures are committed rather than regenerated here: make_figures.py needs
+      # matplotlib and biotp, which this job deliberately does not install.
+      - run: mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    # Previews build on pull requests, but only main is published.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

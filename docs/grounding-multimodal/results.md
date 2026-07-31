@@ -17,7 +17,9 @@ embedding code; provenance in
 
 2,773 held-out proteins from DeepLoc's homology-partitioned test split. Mean over
 3 seeds, standard deviation across seeds. Majority-class accuracy floor: 0.291.
-Macro-F1 is the metric to read, since the classes are 26-fold imbalanced.
+Macro-F1 is the metric to read, since the classes are 26-fold imbalanced and it
+weights every compartment equally regardless of size; it is defined, with the
+other metrics here, in [Method](method.md#definitions).
 
 | Arm | Accuracy | Macro-F1 | Balanced acc. |
 |---|---:|---:|---:|
@@ -27,6 +29,12 @@ Macro-F1 is the metric to read, since the classes are 26-fold imbalanced.
 | **sequence + free text** | **0.835 ± 0.007** | **0.740 ± 0.006** | **0.716 ± 0.009** |
 | sequence + structured | 0.939 ± 0.001 | 0.906 ± 0.005 | 0.893 ± 0.005 |
 | shuffled-text control | 0.737 ± 0.002 | 0.578 ± 0.006 | 0.564 ± 0.004 |
+
+![Macro-F1 by arm: the two structured arms sit near 0.91, sequence+free text at 0.740, the two baselines at 0.617 and 0.616, and the shuffled-text control below them at 0.578.](figures/arms-macro-f1.svg)
+
+*Macro-F1 per arm, error bars showing the standard deviation across 3 seeds.
+Orange marks the structured arms, which bound what label leakage looks like on
+this task; the control in green sits below the sequence-only baseline.*{: .figure-caption }
 
 Three things to take from this table.
 
@@ -64,6 +72,12 @@ Per-class F1 on the all-proteins cohort, ordered by sequence-only performance:
 | Lysosome/Vacuole | 2.3% | 0.317 | 0.586 | +0.269 |
 | Golgi apparatus | 2.6% | 0.298 | 0.442 | +0.144 |
 | Peroxisome | 1.1% | 0.167 | 0.519 | +0.352 |
+
+![Per-class F1 for sequence-only against sequence+free text, one row per compartment ordered by sequence-only performance; the gap between the two points widens steadily toward the bottom.](figures/per-class-f1.svg)
+
+*Each row is one compartment: grey is sequence-only, blue is sequence + free
+text, and the bar between them is the gain. Rows are ordered by sequence-only
+performance, so the widening gaps toward the bottom are the whole finding.*{: .figure-caption }
 
 **The gain is concentrated in the classes the sequence model handles worst**, and
 those are largely the rare ones. Peroxisome roughly triples and Lysosome/Vacuole
@@ -197,8 +211,8 @@ essentially no padding at all.
 Those wall-clock figures compare the pipeline before and after, which also
 re-tuned the batch size from 16 to 8; holding batch size fixed, the code change
 alone measures about 3x. The details, including why the other two hypotheses in #3
-were wrong, are in the 2026-07-30 speedup entry of
-[`DECISION_LOG.md`](../../projects/grounding-multimodal/DECISION_LOG.md).
+were wrong, are in the 2026-07-30 speedup entry of the
+[experiment log](decision-log.md).
 
 ```bash
 python projects/grounding-multimodal/scripts/prepare_data.py

@@ -1,0 +1,45 @@
+/* Tweaks to the built-in readthedocs theme, kept minimal and additive. */
+
+/* The stock theme caps content at 800px, which wraps the wider results tables
+   (per-class F1 has five columns) into something hard to scan. */
+.wy-nav-content {
+  max-width: 1000px;
+}
+
+/* Figures: scale down on narrow screens rather than overflowing the column. */
+.rst-content img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Caption under a figure, written as the italic line following the image. */
+.rst-content .figure-caption,
+.rst-content img + em {
+  display: block;
+  margin-top: 0.4em;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: #555;
+}
+
+/* Wide tables scroll inside their own box instead of stretching the page. */
+.rst-content table.docutils,
+.rst-content table {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* The theme's default is to wrap table text, which makes numeric columns ragged. */
+.rst-content table.docutils td,
+.rst-content table.docutils th {
+  white-space: nowrap;
+}
+
+/* MathJax display equations get a little breathing room. */
+mjx-container[display="true"] {
+  margin: 1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
