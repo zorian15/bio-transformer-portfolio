@@ -32,6 +32,10 @@ dependencies:
       - ruff
       - mypy
       - pytest
+      # Already arrives transitively via transformers and datasets, but declared
+      # because tests/test_conventions.py parses the CI workflows with it, and a
+      # test should not rest on another package happening to pull it in.
+      - pyyaml
       # Docs site (mkdocs build / mkdocs serve). The readthedocs theme ships
       # with mkdocs itself, so no theme package is needed; pymdown-extensions
       # supplies arithmatex (the metric equations) and superfences.

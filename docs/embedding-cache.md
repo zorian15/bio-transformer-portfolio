@@ -70,14 +70,24 @@ cache miss, recomputing ... (cache predates spec tracking)
 ## The part that still needs a human
 
 `impl_version` is the residual risk: a change to how residues are pooled is not
-visible in any named field, so someone has to bump it. Two safeguards:
+visible in any named field, so someone has to bump it. Three safeguards:
 
 - `test_cache_key_is_stable_for_the_recorded_spec` pins the exact key for a fixed
   spec. Any spec change, including a version bump, fails that test, so the change
   surfaces as something to confirm rather than passing quietly.
+- `test_embed_sequences_matches_the_frozen_reference` checks the current code
+  against 24 vectors written by the pre-v2 implementation, so a change that moves
+  the numbers is measured rather than assumed. It needs model weights, so it is
+  marked `network` and the default `pytest` run skips it; CI opts back in on every
+  pull request that touches the embedding path, and weekly
+  (`.github/workflows/embedding-anchor.yml`). Until that workflow existed the
+  check ran only when someone typed `pytest -m network`, which is a poor guard for
+  a failure mode whose defining feature is that nothing looks wrong.
 - `CLAUDE.md` carries the review checklist for diffs touching `embeddings.py`.
 
-Neither is airtight, and that is the honest position. What they do is convert a
+None of this is airtight, and that is the honest position. CI can tell you the
+vectors moved; it cannot tell you whether they were *supposed* to, and so it
+cannot decide the version bump for you. What the three do together is convert a
 silent runtime failure into a visible code-review question, and the asymmetry
 justifies it: an unnecessary bump costs a recompute, a missed one costs the truth
 of a result.

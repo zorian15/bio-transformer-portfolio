@@ -37,12 +37,25 @@ pip install -e .                       # installs the biotp package (editable)
 See `CLAUDE.md`. In short: log every meaningful run in the relevant project's `DECISION_LOG.md`; Python is formatted with Black and checked with ruff/mypy/pytest; results are reported honestly, negatives included.
 
 ## Tests
-`pytest` from the repo root. `biotp.utils` is implemented and tested normally. The other four modules are scaffold stubs, so their tests come in two kinds:
+`pytest` from the repo root. The default run deselects tests marked `network`, which download model checkpoints; `pytest -m network` selects exactly those, and CI runs them for you (see below). `biotp.utils` is implemented and tested normally. The other four modules are scaffold stubs, so their tests come in two kinds:
 
 - **Signature and convention tests** run for real today. They pin design decisions that should outlive implementation: embedding width comes from the checkpoint rather than a caller argument, `train(mode=...)` and `push_to_hub(private=...)` have no defaults, and `build_model_card` cannot omit `limitations`.
 - **Behavioral tests** are written against the intended contract and marked `xfail(raises=NotImplementedError)`. With `xfail_strict = true` set in `pyproject.toml`, each one flips to a hard failure the moment the stub starts working, which is the cue to delete the marker and keep the assertions rather than leave a test quietly skipped forever.
 
-`tests/test_environment.py` guards one environment invariant: PyTorch must come from conda-forge, not pip. The pip wheel bundles a second `libomp.dylib` alongside the env's own, and importing torch then aborts the process with `OMP: Error #15` instead of raising, which takes down the whole test run rather than failing one test. Since that crash cannot be caught where it happens, the test checks the packaging structurally and reports how to fix it.
+`tests/test_environment.py` guards one environment invariant: PyTorch must come from conda-forge, not pip. The pip wheel bundles a second `libomp.dylib` alongside the env's own, and importing torch then aborts the process with `OMP: Error #15` instead of raising, which takes down the whole test run rather than failing one test. Since that crash cannot be caught where it happens, the test checks the packaging structurally and reports how to fix it. It is macOS-specific and skips elsewhere, including on CI's Linux runners, which install from `environment.yml` and so cannot hit the hazard in the first place.
+
+## Continuous integration
+Three GitHub Actions workflows in `.github/workflows/`:
+
+| Workflow | What it runs | When |
+|---|---|---|
+| `tests.yml` | `black --check` and `ruff` on a plain Python, then `mypy` and the offline `pytest` suite inside the `biollm` env built from `environment.yml` | every push to `main` and every pull request |
+| `embedding-anchor.yml` | `pytest -m network`, with the ESM-2 checkpoints cached between runs | pull requests touching the embedding path, plus weekly and on demand |
+| `docs.yml` | `mkdocs build --strict`; publishes to GitHub Pages from `main` only | every push to `main` and every pull request |
+
+The network suite is split out because it is the only one that downloads model weights, which wants a cache and a narrower trigger. Its load-bearing member is `test_embed_sequences_matches_the_frozen_reference`, which checks the current embedding code against reference vectors committed in `tests/data/`. That check is what makes a bump of `EMBEDDING_IMPL_VERSION` defensible, and it used to run only when someone remembered to type `pytest -m network`, which is a poor guard for a failure mode whose defining feature is that nothing looks wrong. See [`docs/embedding-cache.md`](docs/embedding-cache.md).
+
+`tests/test_conventions.py` pins that arrangement mechanically: it fails if no workflow runs the network suite, if the workflow that does stops triggering on embedding changes, or if the `network` marker stops being registered. A workflow deleted in a cleanup breaks a test rather than quietly reducing coverage.
 
 ## Running locally vs on SLURM
 The same code runs on the MacBook (Apple MPS) or a SLURM GPU node (CUDA); `biotp.utils.get_device()` selects automatically (set `PYTORCH_ENABLE_MPS_FALLBACK=1` locally). Use SLURM for the heavy one-offs (embedding extraction, fine-tunes) via the templates in `slurm/`, move results back with rsync, and push final checkpoints to Hugging Face. Large artifacts are never committed to git. See `PLANNING.md` (Compute and robustness; Artifacts and storage).

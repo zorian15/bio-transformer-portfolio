@@ -30,6 +30,13 @@ The embedding cache key covers the inputs **and** the code that shapes them, via
 - If yes, `test_cache_key_is_stable_for_the_recorded_spec` will fail. That failure is the reminder, not a nuisance: confirm the change was intended, then update `GOLDEN_SPEC_KEY` in the same commit. Never update the golden key on its own to make a red test green.
 - If no, the key should be unchanged and that test should still pass. A surprising failure means the change was less cosmetic than it looked.
 - Stale caches are the silent failure mode: results keep computing, numbers stay plausible, and they describe code that is no longer in the repo. Prefer an unnecessary bump (costs a recompute) to a missed one (costs the truth of a result).
+- CI runs the frozen-reference check on every PR touching this file, so a change that moves the vectors surfaces without anyone opting in. It reports *that* they moved; whether they were meant to is still the reviewer's call.
+
+## Continuous integration
+- `tests.yml`: black and ruff on a plain Python, then mypy and the offline `pytest` suite in the `biollm` env built from `environment.yml`. Every push and PR.
+- `embedding-anchor.yml`: `pytest -m network`, which downloads ESM-2 checkpoints (cached). PRs touching the embedding path, plus weekly and on demand.
+- `docs.yml`: `mkdocs build --strict`, publishing to Pages from main.
+- Runners are Linux, so `tests/test_environment.py` always skips there. That guard covers a macOS developer hazard (`pip install torch`) which a run installing from `environment.yml` cannot hit, so it stays a local check.
 
 ## Experiment workflow
 - Every meaningful run or decision gets an entry in that project's `DECISION_LOG.md` (newest on top): question/hypothesis, setup (data, model, config), result (metric, plot ref), decision/next step.

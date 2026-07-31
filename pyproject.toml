@@ -18,8 +18,13 @@ biotp = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Network tests download model checkpoints, so they are opt-in: run them with
-# `pytest -m network`. The default suite stays fast and works offline.
-addopts = "-ra -m 'not network'"
+# `pytest -m network`. The default suite stays fast and works offline. CI opts
+# back in, in .github/workflows/embedding-anchor.yml, so the frozen-reference
+# check does not depend on a human remembering (issue #8).
+#
+# --strict-markers because a mistyped or renamed marker otherwise selects nothing
+# and the suite stays green while a load-bearing test quietly stops running.
+addopts = "-ra --strict-markers -m 'not network'"
 markers = [
     "network: downloads model weights or queries a remote API",
 ]
