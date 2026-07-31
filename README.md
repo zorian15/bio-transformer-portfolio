@@ -17,7 +17,7 @@ Numbering matches build order, so Project 1 is the one to build first. That orde
 | Path | Role |
 |---|---|
 | `PLANNING.md` | Source-of-truth plan for all three projects |
-| `src/biotp/` | Shared infrastructure: ESM-2 embeddings, fine-tune harness, leakage-aware eval, HF release helpers |
+| `src/biotp/` | Shared infrastructure: ESM-2 embeddings, fine-tune harness, leakage-aware eval, annotation-text ablation, HF release helpers |
 | `tests/` | Tests for `biotp`; the stub modules carry strict-`xfail` contract tests (see below) |
 | `projects/*/` | One folder per project: `README.md` (scope) + `DECISION_LOG.md` (experiment log) |
 | `data/` | Datasets (gitignored); see `data/README.md` for what to fetch |
@@ -37,7 +37,7 @@ pip install -e .                       # installs the biotp package (editable)
 See `CLAUDE.md`. In short: log every meaningful run in the relevant project's `DECISION_LOG.md`; Python is formatted with Black and checked with ruff/mypy/pytest; results are reported honestly, negatives included.
 
 ## Tests
-`pytest` from the repo root. The default run deselects tests marked `network`, which download model checkpoints; `pytest -m network` selects exactly those, and CI runs them for you (see below). `biotp.utils` is implemented and tested normally. The other four modules are scaffold stubs, so their tests come in two kinds:
+`pytest` from the repo root. The default run deselects tests marked `network`, which download model checkpoints; `pytest -m network` selects exactly those, and CI runs them for you (see below). `biotp.utils`, `biotp.runlog`, `biotp.embeddings`, `biotp.evaluation` and `biotp.text_ablation` are implemented and tested normally. `biotp.training` and `biotp.release` are still scaffold stubs, so their tests come in two kinds:
 
 - **Signature and convention tests** run for real today. They pin design decisions that should outlive implementation: embedding width comes from the checkpoint rather than a caller argument, `train(mode=...)` and `push_to_hub(private=...)` have no defaults, and `build_model_card` cannot omit `limitations`.
 - **Behavioral tests** are written against the intended contract and marked `xfail(raises=NotImplementedError)`. With `xfail_strict = true` set in `pyproject.toml`, each one flips to a hard failure the moment the stub starts working, which is the cue to delete the marker and keep the assertions rather than leave a test quietly skipped forever.

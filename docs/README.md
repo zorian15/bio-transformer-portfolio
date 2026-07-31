@@ -24,7 +24,7 @@ record what actually happened, including the wrong turns.
 
 | Project | Reports | Experiment log |
 |---|---|---|
-| 1. grounding-multimodal | Introduction, Data, Method, Results | [Log](grounding-multimodal/decision-log.md) |
+| 1. grounding-multimodal | Introduction, Data, Method, Ablation filter, Results | [Log](grounding-multimodal/decision-log.md) |
 | 2. dms-benchmark | Not started | [Log](dms-benchmark/decision-log.md) |
 | 3. tcr-antibody-lm | Not started | [Log](tcr-antibody-lm/decision-log.md) |
 
@@ -39,16 +39,19 @@ improves subcellular localization over sequence alone, and whether any gain
 survives controls that rule out label leakage.
 
 Adding free-text function annotations to a frozen ESM-2 representation improves
-macro-F1 from 0.617 to 0.740, roughly 15x the seed spread, and a shuffled-text
+macro-F1 from 0.616 to 0.740, roughly 20x the seed spread, and a shuffled-text
 control lands *below* sequence-only. So the gain is tied to each protein's own
 annotation rather than to the extra dimensions.
 
 That is the narrow claim, and it holds. The broader claim, that this is
-*grounding* rather than annotations quietly restating the label, is
-[not yet supported](grounding-multimodal/results.md#interpretation): the
-structured-annotation arm reaches 0.912 by stating the answer outright, and free
-text sits between that and sequence-only. The experiment that decides it is
-ablating localization-stating sentences and re-running.
+*grounding* rather than annotations quietly restating the label, has now been
+measured by [ablating the localization-stating sentences and
+re-running](grounding-multimodal/results.md#separating-grounding-from-leakage).
+About an eighth of the gain is the prose naming the compartment. Most of the rest
+is not leakage, but neither is it robust: a length-matched random-sentence
+control shows the bulk of the gain depends on having the whole annotation,
+particularly for the rare compartments. The filter and its judgement calls are
+documented in [Ablation filter](grounding-multimodal/ablation.md).
 
 ## Reading these locally
 

@@ -142,7 +142,7 @@ the improvement is specific to the protein's own text rather than an artifact of
 extra input dimensions.**
 
 The broader claim, that this constitutes grounding in biological knowledge, is
-**not yet established**, and the structured arm is why.
+**not established by these six arms alone**, and the structured arm is why.
 
 GO terms and keywords score 0.912 on their own, close to a ceiling. Those fields
 frequently contain the label verbatim: `Q9H400` is labelled Cell membrane and its
@@ -151,8 +151,8 @@ model's ability to read an answer key, and it usefully bounds what pure leakage
 looks like on this task: about 0.91.
 
 Free text sits at 0.740, between sequence-only at 0.616 and the leakage ceiling at
-0.912. That position is consistent with two different stories that this experiment
-cannot yet separate:
+0.912. That position is consistent with two different stories that these six arms
+cannot separate:
 
 1. Function prose carries genuine functional information that complements
    sequence, or
@@ -166,7 +166,9 @@ settle it either, since a curator is arguably *more* likely to state the locatio
 explicitly for an unusual compartment like peroxisome, which would predict the
 same rare-class concentration observed above.
 
-That ablation has now been run, and the answer is neither story cleanly. See
+Separating the two stories takes an ablation that removes localization-stating
+sentences from the free text and re-runs. That has now been done, and the answer
+is neither story cleanly. See
 [Separating grounding from leakage](#separating-grounding-from-leakage).
 
 Two smaller observations:
@@ -304,8 +306,11 @@ bound it: 5.3% of surviving texts still say "membrane" and 4.6% still say
 | Adding the ablation, sequence vectors served from cache | **~200s** |
 | Re-run on a second cohort, all caches hit | **~98s** |
 
-The 44-second second run is the caching design working as intended: the expensive
-step is paid once and every later question is cheap.
+The 98-second second run is the caching design working as intended: the expensive
+step is paid once and every later question is cheap. Twelve arms on a second
+cohort still cost less than two minutes, and adding the six ablation arms to the
+first cohort cost ~200s rather than another 23 minutes, because only the four new
+text variants had to be embedded.
 
 Sequence embedding used to be the whole cost, at 6,024s and 2.3 sequences/second
 ([#3](https://github.com/zorian15/bio-transformer-portfolio/issues/3)). Batching
