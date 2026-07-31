@@ -24,12 +24,26 @@ import pytest
 import yaml
 
 import biotp
-from biotp import embeddings, evaluation, release, text_ablation, training
+from biotp import (
+    embeddings,
+    evaluation,
+    release,
+    text_ablation,
+    training,
+    zero_shot,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
-STUB_MODULES = [embeddings, evaluation, release, text_ablation, training]
+STUB_MODULES = [
+    embeddings,
+    evaluation,
+    release,
+    text_ablation,
+    training,
+    zero_shot,
+]
 
 EXPECTED_FUNCTIONS = {
     "biotp.embeddings": {
@@ -69,7 +83,14 @@ EXPECTED_FUNCTIONS = {
         "ablation_summary",
         "term_mention_counts",
     },
-    "biotp.training": {"build_head", "train", "predict"},
+    # `train_lora` is separate from `train` rather than a mode inside it: adapting
+    # the encoder puts it in the loop, so it takes sequences where `train` takes
+    # precomputed features. See issue #11.
+    "biotp.training": {"build_head", "train", "predict", "train_lora"},
+    # Rung 1 of the DMS ladder: the pretrained model with no gradient updates.
+    # Only masked-marginals, deliberately, so a number carrying that name cannot
+    # have come from the cheaper wild-type-marginal rule. See issue #11.
+    "biotp.zero_shot": {"parse_substitutions", "masked_marginal_scores"},
 }
 
 
