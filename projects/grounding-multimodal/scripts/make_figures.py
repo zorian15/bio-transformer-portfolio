@@ -56,6 +56,19 @@ ARM_STYLE: dict[str, tuple[str, str, str]] = {
     "sequence+free-text": ("sequence + free text", BLUE, "grounded (headline)"),
     "sequence+structured": ("sequence + structured", ORANGE, "leakage bound"),
     "shuffled-text-control": ("shuffled-text control", AQUA, "control"),
+    # The grounding-versus-leakage ablation (issue #5). No new hues: the free-text
+    # arms stay in the blue family at different information levels, and the
+    # length-matched random arms take the control colour, which is their role.
+    "text-only-free-cleaned": ("text-only, cleaned", GREY, "baseline"),
+    "text-only-free-ablated": ("text-only, ablated", GREY, "baseline"),
+    "text-only-free-random-ablated": ("text-only, random-ablated", AQUA, "control"),
+    "sequence+free-text-cleaned": ("sequence + cleaned text", BLUE, "grounded"),
+    "sequence+free-text-ablated": ("sequence + ablated text", BLUE, "grounded"),
+    "sequence+free-text-random-ablated": (
+        "sequence + random-ablated text",
+        AQUA,
+        "control",
+    ),
 }
 
 # Descending by macro-F1, drawn top to bottom: the leakage ceiling first, then
@@ -67,6 +80,21 @@ ARM_ORDER = [
     "text-only-free",
     "sequence-only",
     "shuffled-text-control",
+]
+
+# The ablation ladder, in the order the argument is made: the sequence baseline,
+# then free text at four information levels, then the same four with sequence
+# removed. Each pair of adjacent bars isolates one thing.
+ABLATION_ORDER = [
+    "sequence+free-text",
+    "sequence+free-text-cleaned",
+    "sequence+free-text-ablated",
+    "sequence+free-text-random-ablated",
+    "sequence-only",
+    "text-only-free",
+    "text-only-free-cleaned",
+    "text-only-free-ablated",
+    "text-only-free-random-ablated",
 ]
 
 # The per-class JSON uses dots where the compartment name has spaces.
@@ -93,6 +121,21 @@ def read_arms(path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def assert_every_arm_is_drawn(arms_csv: Path) -> None:
+    """Fail if an arm exists in the results but appears in no figure, or vice versa.
+
+    The check runs in both directions on purpose. A missing arm was already loud,
+    but an arm the runner produces and no figure draws used to vanish silently,
+    which is how a new condition ends up in the table with no picture beside it.
+    """
+    produced = {row["arm"] for row in read_arms(arms_csv)}
+    drawn = set(ARM_ORDER) | set(ABLATION_ORDER)
+    assert produced == drawn, (
+        f"{arms_csv} arms drawn in no figure: {sorted(produced - drawn)}; "
+        f"figure arms absent from the results: {sorted(drawn - produced)}"
+    )
+
+
 def plot_arms(arms_csv: Path, manifest_json: Path, out_path: Path) -> Path:
     """Horizontal bars of macro-F1 per arm, with seed spread and the floor."""
     rows = {row["arm"]: row for row in read_arms(arms_csv)}
@@ -104,6 +147,12 @@ def plot_arms(arms_csv: Path, manifest_json: Path, out_path: Path) -> Path:
     manifest = json.loads(manifest_json.read_text())
     records = manifest.get("records", manifest)
     floor = float(records["majority_class_accuracy"])
+
+    # Computed, not hardcoded: this number sits in the title next to the bars it
+    # describes, so a stale literal would contradict the figure it labels.
+    gain = float(rows["sequence+free-text"]["macro_f1"]) - float(
+        rows["sequence-only"]["macro_f1"]
+    )
 
     names, values, errors, colors = [], [], [], []
     for arm in ARM_ORDER:
@@ -155,7 +204,7 @@ def plot_arms(arms_csv: Path, manifest_json: Path, out_path: Path) -> Path:
     style_axes(ax)
 
     ax.set_title(
-        "Adding free text to sequence gains +0.124 macro-F1;\n"
+        f"Adding free text to sequence gains +{gain:.3f} macro-F1;\n"
         "pairing the same protein with someone else's text loses it",
         fontsize=11,
         color=INK,
@@ -191,14 +240,181 @@ def plot_arms(arms_csv: Path, manifest_json: Path, out_path: Path) -> Path:
     return out_path
 
 
+def plot_ablation(arms_csv: Path, out_path: Path) -> Path:
+    """The ablation ladder: free text at four information levels, with and without sequence."""
+    rows = {row["arm"]: row for row in read_arms(arms_csv)}
+    missing = set(ABLATION_ORDER) - set(rows)
+    assert not missing, f"{arms_csv} is missing arms: {sorted(missing)}"
+
+    grounded = float(rows["sequence+free-text"]["macro_f1"])
+    baseline = float(rows["sequence-only"]["macro_f1"])
+    ablated = float(rows["sequence+free-text-ablated"]["macro_f1"])
+    control = float(rows["sequence+free-text-random-ablated"]["macro_f1"])
+    # The claim the figure makes: what survives the ablation, measured against the
+    # length-matched control rather than against the unfiltered arm, because the
+    # control absorbs the cost of removing text at all.
+    survives = (ablated - baseline) / (grounded - baseline)
+
+    names, values, errors, colors = [], [], [], []
+    for arm in ABLATION_ORDER:
+        display, color, _role = ARM_STYLE[arm]
+        names.append(display)
+        values.append(float(rows[arm]["macro_f1"]))
+        errors.append(float(rows[arm]["macro_f1_sd"]))
+        colors.append(color)
+
+    fig, ax = plt.subplots(figsize=(8.4, 5.6))
+    positions = list(range(len(names)))[::-1]
+    ax.barh(
+        positions,
+        values,
+        xerr=errors,
+        color=colors,
+        height=0.56,
+        error_kw={"ecolor": INK_MUTED, "elinewidth": 1.2, "capsize": 3},
+    )
+
+    ax.axvline(baseline, color=INK_MUTED, linestyle=":", linewidth=1.4)
+    ax.text(
+        baseline + 0.01,
+        len(names) - 0.45,
+        f"sequence-only {baseline:.3f}",
+        fontsize=8,
+        color=INK_MUTED,
+        va="center",
+    )
+
+    for pos, value, error in zip(positions, values, errors):
+        ax.text(
+            value + error + 0.012,
+            pos,
+            f"{value:.3f}",
+            va="center",
+            fontsize=9,
+            color=INK,
+        )
+
+    ax.set_yticks(positions, names, fontsize=9.5)
+    ax.set_ylim(-0.6, len(names) - 0.4)
+    ax.set_xlim(0, 1.0)
+    ax.set_xticks([0, 0.2, 0.4, 0.6, 0.8])
+    ax.set_xlabel("Macro-F1 on the held-out test split", fontsize=9.5, color=INK_MUTED)
+    ax.xaxis.grid(True, color=GRID, linewidth=0.8)
+    style_axes(ax)
+
+    ax.set_title(
+        f"Removing localization-stating sentences keeps {survives:.0%} of the text gain;\n"
+        f"removing as much text at random keeps {(control - baseline) / (grounded - baseline):.0%}",
+        fontsize=11,
+        color=INK,
+        loc="left",
+        pad=12,
+    )
+
+    # Keyed on colour, not role: "grounded (headline)" and "grounded" are the same
+    # blue here, and two swatches of one colour reads as a distinction that is not
+    # being drawn. The headline qualifier belongs on the six-arm figure, not this one.
+    seen: dict[str, str] = {}
+    for arm in ABLATION_ORDER:
+        _display, color, role = ARM_STYLE[arm]
+        seen.setdefault(color, role.replace(" (headline)", ""))
+    handles = [
+        Line2D([], [], marker="s", linestyle="", markersize=8, color=color, label=role)
+        for color, role in seen.items()
+    ]
+    ax.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.13),
+        ncol=len(handles),
+        frameon=False,
+        fontsize=8.5,
+        labelcolor=INK_MUTED,
+        handletextpad=0.5,
+        columnspacing=1.6,
+    )
+
+    fig.tight_layout()
+    fig.savefig(out_path, format="svg", bbox_inches="tight", transparent=True)
+    plt.close(fig)
+    return out_path
+
+
+def plot_ablation_removal(ablation_json: Path, out_path: Path) -> Path:
+    """How much text the filter takes per compartment, and where it takes all of it."""
+    ablation = json.loads(ablation_json.read_text())
+    per_class = ablation["per_class"]
+    assert per_class, f"{ablation_json} has no per-class breakdown"
+
+    classes = sorted(per_class, key=lambda name: per_class[name]["trimmed_share"])
+    trimmed = [per_class[name]["trimmed_share"] for name in classes]
+    emptied = [per_class[name]["emptied_share"] for name in classes]
+
+    fig, ax = plt.subplots(figsize=(8.4, 4.6))
+    positions = list(range(len(classes)))
+
+    # Emptied is a subset of trimmed, so it is drawn over the same bar rather than
+    # beside it: the darker segment is the part of the class that lost everything.
+    ax.barh(positions, trimmed, color=GRID, height=0.58, label="lost a sentence")
+    ax.barh(positions, emptied, color=ORANGE, height=0.58, label="lost all text")
+
+    for pos, share, empty in zip(positions, trimmed, emptied):
+        ax.text(
+            share + 0.02,
+            pos,
+            f"{share:.0%}   ({empty:.0%} emptied)",
+            va="center",
+            fontsize=8.5,
+            color=INK_MUTED,
+        )
+
+    labels = [CLASS_DISPLAY.get(name, name) for name in classes]
+    ax.set_yticks(positions, labels, fontsize=9.5)
+    ax.set_xlim(0, 1.12)
+    ax.set_xticks([0, 0.2, 0.4, 0.6, 0.8])
+    ax.xaxis.set_major_formatter(lambda value, _pos: f"{value:.0%}")
+    ax.set_xlabel(
+        "Share of annotated proteins in the class", fontsize=9.5, color=INK_MUTED
+    )
+    ax.xaxis.grid(True, color=GRID, linewidth=0.8)
+    style_axes(ax)
+
+    ax.set_title(
+        "The filter is not class-neutral, and that is the confound:\n"
+        "organelle proteins lose the most text, and most often lose all of it",
+        fontsize=11,
+        color=INK,
+        loc="left",
+        pad=12,
+    )
+    # Below the axes, like the other bar figures: every band inside the plot holds
+    # a bar and a label, so an in-plot legend collides with one of them.
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.14),
+        ncol=2,
+        frameon=False,
+        fontsize=8.5,
+        labelcolor=INK_MUTED,
+        handletextpad=0.5,
+        columnspacing=1.6,
+    )
+
+    fig.tight_layout()
+    fig.savefig(out_path, format="svg", bbox_inches="tight", transparent=True)
+    plt.close(fig)
+    return out_path
+
+
 def plot_per_class(per_class_json: Path, out_path: Path) -> Path:
     """Dumbbell chart: per-class F1, sequence-only against sequence + free text."""
     per_class = json.loads(per_class_json.read_text())
-    for arm in ("sequence-only", "sequence+free-text"):
+    for arm in ("sequence-only", "sequence+free-text", "sequence+free-text-ablated"):
         assert arm in per_class, f"{per_class_json} has no arm {arm!r}"
 
     baseline = per_class["sequence-only"]
     grounded = per_class["sequence+free-text"]
+    ablated = per_class["sequence+free-text-ablated"]
 
     # Worst-performing sequence-only class at the bottom, so the eye travels down
     # into exactly the region where the gains are largest.
@@ -209,11 +425,14 @@ def plot_per_class(per_class_json: Path, out_path: Path) -> Path:
 
     for pos, name in zip(positions, classes):
         low, high = baseline[name], grounded[name]
+        # The ablated point sits on the same row: how much of each class's gain is
+        # left once the prose can no longer name the compartment.
         ax.plot([low, high], [pos, pos], color=GRID, linewidth=3, zorder=1)
         ax.scatter([low], [pos], s=64, color=GREY, zorder=2)
+        ax.scatter([ablated[name]], [pos], s=52, color=AQUA, zorder=3)
         ax.scatter([high], [pos], s=64, color=BLUE, zorder=2)
         ax.text(
-            max(low, high) + 0.02,
+            max(low, high, ablated[name]) + 0.02,
             pos,
             f"+{high - low:.3f}",
             va="center",
@@ -255,6 +474,15 @@ def plot_per_class(per_class_json: Path, out_path: Path) -> Path:
             [],
             marker="o",
             linestyle="",
+            markersize=7,
+            color=AQUA,
+            label="sequence + ablated text",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="o",
+            linestyle="",
             markersize=8,
             color=BLUE,
             label="sequence + free text",
@@ -288,6 +516,9 @@ def main() -> None:
     args.figures_dir.mkdir(parents=True, exist_ok=True)
 
     with run_context("make-figures", log_dir=args.log_dir, params=vars(args)) as run:
+        with run.step("check every arm is drawn"):
+            assert_every_arm_is_drawn(args.results_dir / "arms_all.csv")
+
         with run.step("arm comparison"):
             written = plot_arms(
                 args.results_dir / "arms_all.csv",
@@ -304,6 +535,22 @@ def main() -> None:
             )
             run.record("per_class_figure", str(written.relative_to(REPO_ROOT)))
             run.record("per_class_figure_bytes", written.stat().st_size)
+
+        with run.step("ablation ladder"):
+            written = plot_ablation(
+                args.results_dir / "arms_all.csv",
+                args.figures_dir / "ablation-macro-f1.svg",
+            )
+            run.record("ablation_figure", str(written.relative_to(REPO_ROOT)))
+            run.record("ablation_figure_bytes", written.stat().st_size)
+
+        with run.step("ablation removal by class"):
+            written = plot_ablation_removal(
+                args.results_dir / "ablation_all.json",
+                args.figures_dir / "ablation-removal-by-class.svg",
+            )
+            run.record("removal_figure", str(written.relative_to(REPO_ROOT)))
+            run.record("removal_figure_bytes", written.stat().st_size)
 
 
 if __name__ == "__main__":

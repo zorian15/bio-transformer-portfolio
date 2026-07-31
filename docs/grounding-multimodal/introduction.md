@@ -1,7 +1,7 @@
 # Does language grounding help protein representations?
 
-**Status:** data pipeline and frozen embeddings are built and tested; head training
-and evaluation are in progress (issue #1). No results yet.
+**Status:** complete through the grounding-versus-leakage ablation (issues #1 and
+#5). See [Results](results.md).
 
 ## The question
 
@@ -79,8 +79,9 @@ here is the evidence" is a valid outcome and will be reported as one.
 
 ## Arms and controls
 
-Six conditions, all sharing the same frozen encoders, head architecture, and
-splits, so differences are attributable to the inputs:
+Twelve conditions, all sharing the same frozen encoders, head architecture, and
+splits, so differences are attributable to the inputs. The first six answer
+"does text help"; the last six answer "why".
 
 | Arm | Inputs | Purpose |
 |---|---|---|
@@ -90,12 +91,22 @@ splits, so differences are attributable to the inputs:
 | sequence + free text | both, concatenated | The headline comparison |
 | sequence + structured | both, concatenated | Same, with leaky text |
 | shuffled-text control | sequence + text from a random other protein | Detects gains that are not about this protein's text |
+| sequence + cleaned text | free text with database bookkeeping stripped | Isolates the evidence-code confound |
+| sequence + ablated text | free text with compartment-naming sentences removed | How much of the gain is the text stating the answer? |
+| sequence + random-ablated text | free text with as many sentences removed at random | Separates "removed the answer" from "removed text" |
+| text-only, cleaned / ablated / random-ablated | the same three variants without sequence | The sensitive readout, since the combined arm can lean on sequence |
 
 The controls are what make the headline interpretable. If sequence+text beats
 sequence-only, the shuffled-text arm says whether the gain came from this
 protein's annotation or merely from adding a well-behaved extra input. If
 text-only already performs near the top, the text is doing the work by itself,
 which points to leakage rather than complementary information.
+
+The ablation arms carry their own control for the same reason. Removing
+localization-stating sentences removes text as well as answers, so the ablated
+arm on its own cannot distinguish the two; the length-matched random arm removes
+an equal amount of text from the same proteins, and the gap between them is what
+isolates the leakage. See [Ablation filter](ablation.md).
 
 ## Evaluation criteria
 

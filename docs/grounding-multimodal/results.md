@@ -1,17 +1,25 @@
 # Results: does language grounding help?
 
-**Short answer: yes, and the gain survives the control.** Adding free-text
-function annotations to a frozen ESM-2 representation improves macro-F1 from
-0.616 to 0.740 on held-out proteins, and pairing each protein with a *different*
-protein's text destroys the gain, which is what rules out the boring explanation.
+**Short answer: yes, mostly, and about an eighth of it is leakage.** Adding
+free-text function annotations to a frozen ESM-2 representation improves macro-F1
+from 0.616 to 0.740 on held-out proteins, and pairing each protein with a
+*different* protein's text destroys the gain, which rules out the boring
+explanation.
+
+Ablating the sentences that name a compartment costs 12% of that gain, so the
+prose is partly reading the answer. A further 56% turns out to depend simply on
+having the full annotation, which only a length-matched random control could
+reveal. See [Separating grounding from
+leakage](#separating-grounding-from-leakage).
 
 The separate structured-annotation arm shows what blatant label leakage looks
-like, and it scores far higher still, which is the main reason to read the
-headline with care. See [Interpretation](#interpretation).
+like, and it scores far higher still. See [Interpretation](#interpretation).
 
-Produced by the run of 2026-07-30 21:55 UTC, the first on the post-speedup
-embedding code; provenance in
-`projects/grounding-multimodal/results/run_manifest_all.json`.
+Produced by the runs of 2026-07-30 21:55 UTC (six arms) and 2026-07-31 14:37 UTC
+(the ablation arms); provenance in
+`projects/grounding-multimodal/results/run_manifest_all.json` and
+`ablation_all.json`. The original six arms reproduced bit-for-bit in the later
+run, which is what licenses reading the two together.
 
 ## Headline
 
@@ -158,10 +166,8 @@ settle it either, since a curator is arguably *more* likely to state the locatio
 explicitly for an unusual compartment like peroxisome, which would predict the
 same rare-class concentration observed above.
 
-Distinguishing them requires an ablation that removes localization-stating
-sentences from the free text and re-runs. Until that is done, the honest summary
-is: text helps, the help is specific to the protein, and how much of it is
-grounding rather than leakage is unmeasured.
+That ablation has now been run, and the answer is neither story cleanly. See
+[Separating grounding from leakage](#separating-grounding-from-leakage).
 
 Two smaller observations:
 
@@ -171,10 +177,108 @@ Two smaller observations:
 - **Every arm clears the 0.291 majority floor comfortably**, so no arm is
   degenerate.
 
+## Separating grounding from leakage
+
+The interpretation above left one question open: how much of the +0.124 is the
+text carrying function, and how much is it naming the compartment? To answer it,
+sentences mentioning any of the ten compartments or their synonyms are removed
+from the free text and the arms re-run. The filter, its vocabulary, and the
+judgement calls behind it are documented in [Ablation filter](ablation.md); it
+trims 13.5% of sentences and leaves 83.6% of the corpus characters.
+
+Two extra conditions make the comparison interpretable. A **cleaned** arm strips
+the `{ECO:...}` codes and `FUNCTION: ` prefix but ablates nothing, which separates
+"removed the answer" from "removed the bookkeeping". A **random-ablated** control
+removes the same *number* of sentences per protein, chosen at random, which
+separates "removed the answer" from "removed text".
+
+| Arm | Macro-F1 | vs sequence-only |
+|---|---:|---:|
+| sequence-only | 0.616 ± 0.004 | |
+| **sequence + free text** | **0.740 ± 0.006** | **+0.124** |
+| sequence + cleaned text | 0.743 ± 0.003 | +0.127 |
+| sequence + random-ablated text | 0.671 ± 0.017 | +0.055 |
+| sequence + ablated text | 0.656 ± 0.013 | +0.040 |
+| text-only, free text | 0.617 ± 0.015 | |
+| text-only, cleaned | 0.630 ± 0.006 | |
+| text-only, random-ablated | 0.518 ± 0.011 | |
+| text-only, ablated | 0.482 ± 0.008 | |
+
+![Macro-F1 for the ablation ladder: sequence+free text 0.740, cleaned 0.743, ablated 0.656, random-ablated 0.671, against the sequence-only baseline of 0.616, with the four text-only counterparts below.](figures/ablation-macro-f1.svg)
+
+*The ablation ladder. The bar to compare the ablated arm against is the
+random-ablated control directly above it, not the unfiltered arm at the top.*{: .figure-caption }
+
+**Cleaning the evidence codes changes nothing.** 0.743 against 0.740, within one
+standard deviation. This resolves the open preprocessing question flagged in
+[data.md](data.md): the `{ECO:...}` markers and the constant `FUNCTION: ` prefix
+were 22% of the corpus by character count, and removing them moves no arm
+materially. Worth knowing, and it means the unfiltered baseline was never
+contaminated by bookkeeping.
+
+**The ablation drops the arm to 0.656, but most of that is not leakage.** Read
+against the unfiltered arm alone, 68% of the gain vanishes, which looks like a
+damning leakage result. Read against the length-matched control, it is not:
+removing an equal number of *randomly chosen* sentences drops the arm to 0.671,
+almost as far. The gain is fragile to losing text at all, because the filter takes
+text disproportionately from the rare compartments where the gain was concentrated
+(72% of Mitochondrion proteins lose a sentence, against 14% of Extracellular ones).
+
+That splits the +0.124 three ways:
+
+| Component | Macro-F1 | Share of the gain |
+|---|---:|---:|
+| Lost by removing 13.5% of sentences at all | 0.069 | 56% |
+| Lost specifically because those sentences named the compartment | 0.015 | 12% |
+| Survives both | 0.040 | 32% |
+
+**The leakage component is small but real.** 0.015 macro-F1 is smaller than either
+arm's seed spread, so the standard deviations in the table above do not settle it.
+The per-seed pairing does: the ablated arm sits below the control in all three
+seeds, by 0.011, 0.013 and 0.022. Seeds share a split and an initialization
+stream, so the paired difference is far better resolved than the individual
+spreads suggest. The sign is consistent; the magnitude is worth about one eighth
+of the effect.
+
+So, against the three outcomes the experiment was set up to distinguish:
+
+- Not "the gain largely survives": only a third of it does.
+- Not "the gain collapses to sequence-only, so it was all leakage": the collapse
+  is mostly caused by removing text, and an equal-sized random removal reproduces
+  four fifths of it.
+- The honest answer is the third one, and it is more specific than "somewhere in
+  between": **about an eighth of the free-text gain is the prose naming the
+  compartment. The rest is not leakage, but neither is it robust: it depends on
+  having the whole annotation, particularly for the rare classes.**
+
+The single most useful thing the ablation produced is that middle finding, and it
+is only visible because of the control. Without a length-matched comparison this
+run would have been reported as "68% of the gain was leakage", which the data do
+not support.
+
+**What the ablation does not establish.** `text-only, ablated` still scores 0.482,
+well above the 0.291 floor, so the filtered prose remains far from
+information-free about localization. Some of that is genuine function signal and
+some is residual leakage the vocabulary missed; this design cannot separate them.
+The residual sentinel counts in [ablation.md](ablation.md#measuring-what-the-filter-missed)
+bound it: 5.3% of surviving texts still say "membrane" and 4.6% still say
+"chromatin", both deliberately left unfiltered.
+
 ## Limitations
 
-- The free-text arm may contain label leakage, unquantified. This is the main
-  caveat and the obvious next experiment.
+- About an eighth of the free-text gain is label leakage, now measured rather than
+  assumed. The residual is bounded but not zero: see the sentinel counts in
+  [ablation.md](ablation.md).
+- The ablation removes whole sentences, so it cannot separate a clause naming a
+  compartment from the function claim wrapped around it. The random control
+  measures the cost of that bluntness but does not avoid it.
+- The random control matches sentence count, not character count. Removed
+  localization sentences are slightly longer than average, so it retains 85.1% of
+  characters against the ablation's 83.6%; that 1.5-point gap flatters the ablated
+  arm's comparison very slightly.
+- Three seeds is thin for a *ratio* like "32% of the gain survives", whose
+  uncertainty is wider than either endpoint's. The per-seed sign test is what the
+  leakage claim rests on, not the ratio's precision.
 - One encoder pair (ESM-2 35M, all-MiniLM-L6-v2), one head configuration, one
   learning rate. No hyperparameter search, so these are not best-achievable
   numbers for any arm.
@@ -183,9 +287,10 @@ Two smaller observations:
 - The train/validation boundary is not family-grouped, so model selection may be
   mildly optimistic. Test numbers come from DeepLoc's homology-partitioned split
   and are unaffected.
-- Text is fed to the encoder as UniProt returns it, including `{ECO:...}`
-  evidence codes and a constant `FUNCTION: ` prefix (see [data.md](data.md)).
-  Cleaning these could change the free-text arms.
+- The headline arm is still fed text as UniProt returns it, including `{ECO:...}`
+  evidence codes and the `FUNCTION: ` prefix. That is now a measured choice rather
+  than an untested one: the cleaned arm scores 0.743 against 0.740, so the codes
+  cost nothing and the committed baseline stays comparable to earlier runs.
 
 ## Cost and reproduction
 
@@ -193,9 +298,11 @@ Two smaller observations:
 |---|---|
 | Embedding 13,858 sequences (ESM-2 35M, MPS) | 1,257s (~21 min) |
 | Embedding free text and structured text | 31s + 41s |
-| 18 arm-seed fits on cached vectors | ~43s total |
+| Embedding the four ablation text variants | ~100s total |
+| 36 arm-seed fits on cached vectors | ~90s total |
 | Full run | 1,381s (~23 min) |
-| Re-run on a second cohort, all caches hit | **~44s** |
+| Adding the ablation, sequence vectors served from cache | **~200s** |
+| Re-run on a second cohort, all caches hit | **~98s** |
 
 The 44-second second run is the caching design working as intended: the expensive
 step is paid once and every later question is cheap.

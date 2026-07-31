@@ -1,5 +1,5 @@
 {
-  "duration_seconds": 42.381,
+  "duration_seconds": 97.722,
   "environment": {
     "device": "mps",
     "machine": "arm64",
@@ -17,18 +17,226 @@
     "python": "3.11.15"
   },
   "git": {
-    "branch": "3-speed-up-embed-sequences",
-    "commit": "7461e811f8863a0ea8f928d153953f5a69db0cc6",
+    "branch": "5-ablate-localization-sentences",
+    "commit": "738693289668a838be68bcd05bdb1cf31f762118",
     "dirty": true
   },
-  "log_file": "logs/run-arms-20260730T225505Z.log",
+  "log_file": "logs/run-arms-20260731T144111Z.log",
   "params": {
     "annotated_only": true,
-    "data_root": "data",
+    "data_root": "/Users/zo/projects/personal/bio-transformer-portfolio/data",
     "log_dir": "logs",
     "results_dir": "projects/grounding-multimodal/results"
   },
   "records": {
+    "ablation": {
+      "characters": {
+        "after": 4480738,
+        "before": 5362266,
+        "corpus_retention": 0.8356053205864834,
+        "retention_mean": 0.8284374278987012,
+        "retention_median": 1.0,
+        "retention_p10": 0.25801282051282054
+      },
+      "lexicon_version": 1,
+      "per_class": {
+        "Cell.membrane": {
+          "emptied": 31,
+          "emptied_share": 0.024351924587588374,
+          "proteins": 1273,
+          "trimmed": 452,
+          "trimmed_share": 0.35506677140612725
+        },
+        "Cytoplasm": {
+          "emptied": 61,
+          "emptied_share": 0.026487190620929222,
+          "proteins": 2303,
+          "trimmed": 468,
+          "trimmed_share": 0.2032132001736865
+        },
+        "Endoplasmic.reticulum": {
+          "emptied": 72,
+          "emptied_share": 0.09424083769633508,
+          "proteins": 764,
+          "trimmed": 373,
+          "trimmed_share": 0.4882198952879581
+        },
+        "Extracellular": {
+          "emptied": 70,
+          "emptied_share": 0.040345821325648415,
+          "proteins": 1735,
+          "trimmed": 248,
+          "trimmed_share": 0.14293948126801154
+        },
+        "Golgi.apparatus": {
+          "emptied": 56,
+          "emptied_share": 0.1830065359477124,
+          "proteins": 306,
+          "trimmed": 174,
+          "trimmed_share": 0.5686274509803921
+        },
+        "Lysosome/Vacuole": {
+          "emptied": 64,
+          "emptied_share": 0.2206896551724138,
+          "proteins": 290,
+          "trimmed": 178,
+          "trimmed_share": 0.6137931034482759
+        },
+        "Mitochondrion": {
+          "emptied": 340,
+          "emptied_share": 0.2639751552795031,
+          "proteins": 1288,
+          "trimmed": 928,
+          "trimmed_share": 0.7204968944099379
+        },
+        "Nucleus": {
+          "emptied": 100,
+          "emptied_share": 0.026164311878597593,
+          "proteins": 3822,
+          "trimmed": 702,
+          "trimmed_share": 0.1836734693877551
+        },
+        "Peroxisome": {
+          "emptied": 33,
+          "emptied_share": 0.22448979591836735,
+          "proteins": 147,
+          "trimmed": 74,
+          "trimmed_share": 0.5034013605442177
+        },
+        "Plastid": {
+          "emptied": 73,
+          "emptied_share": 0.10458452722063037,
+          "proteins": 698,
+          "trimmed": 270,
+          "trimmed_share": 0.3868194842406877
+        }
+      },
+      "proteins": 12626,
+      "proteins_emptied": {
+        "count": 900,
+        "share": 0.07128148265483922
+      },
+      "proteins_trimmed": {
+        "count": 3867,
+        "share": 0.30627277047362583
+      },
+      "random_control_retention": {
+        "ablated_retention": 0.8356053205864834,
+        "random_retention": 0.7898507832323126
+      },
+      "removals_by_term": {
+        "amyloplast": 5,
+        "apical membrane": 25,
+        "apoplast": 5,
+        "autolysosome": 3,
+        "basolateral membrane": 13,
+        "blood plasma": 1,
+        "cell membrane": 135,
+        "cell surface": 132,
+        "chloroplast": 227,
+        "chloroplast stroma": 4,
+        "chromoplast": 1,
+        "cristae": 13,
+        "cytoplasm": 182,
+        "cytoplasmic": 204,
+        "cytoplasmic membrane": 2,
+        "cytosol": 142,
+        "cytosolic": 126,
+        "endolysosome": 1,
+        "endoplasmic reticulum": 378,
+        "er exit": 1,
+        "er lumen": 7,
+        "er membrane": 31,
+        "er stress": 41,
+        "er-associated": 18,
+        "etioplast": 6,
+        "extracellular": 209,
+        "extracellular matrix": 63,
+        "extracellular space": 7,
+        "glyoxysomal": 1,
+        "glyoxysome": 1,
+        "golgi": 233,
+        "intermembrane space": 62,
+        "localization signal": 3,
+        "localized to": 3,
+        "localizes to": 21,
+        "lysosomal": 77,
+        "lysosome": 66,
+        "microsomal": 5,
+        "mitochondria": 250,
+        "mitochondrial": 900,
+        "mitochondrial matrix": 65,
+        "mitochondrially": 1,
+        "mitochondrion": 61,
+        "mitoribosome": 121,
+        "nuclear": 492,
+        "nuclear envelope": 89,
+        "nuclear lamina": 22,
+        "nuclear pore": 66,
+        "nuclei": 21,
+        "nucleolar": 112,
+        "nucleoli": 3,
+        "nucleolus": 78,
+        "nucleoplasm": 19,
+        "nucleus": 224,
+        "perinuclear": 15,
+        "periplasmic": 2,
+        "peroxisomal": 51,
+        "peroxisome": 57,
+        "peroxisome targeting signal": 2,
+        "plasma membrane": 242,
+        "plastid": 81,
+        "plastoglobule": 4,
+        "pts1": 4,
+        "pts2": 6,
+        "sarcolemma": 1,
+        "sarcoplasmic reticulum": 5,
+        "secreted": 117,
+        "signal peptide": 21,
+        "targeted to": 22,
+        "targeting signal": 1,
+        "tgn": 13,
+        "thylakoid": 65,
+        "tonoplast": 11,
+        "trans-golgi network": 22,
+        "transit peptide": 31,
+        "translocated to": 3,
+        "translocates to": 6,
+        "vacuolar": 124,
+        "vacuole": 85
+      },
+      "residual_sentinel_mentions": {
+        "ER": 74,
+        "cell wall": 195,
+        "chromatin": 581,
+        "compartment": 60,
+        "cytoskeleton": 139,
+        "endosome": 30,
+        "envelope": 15,
+        "granule": 41,
+        "intracellular": 289,
+        "lumen": 18,
+        "matrix": 70,
+        "membrane": 670,
+        "microtubule": 280,
+        "nucleoid": 1,
+        "nucleosome": 194,
+        "organelle": 46,
+        "secretion": 157,
+        "secretory": 64,
+        "secretory pathway": 35,
+        "stroma": 0,
+        "stromal": 7,
+        "vesicle": 130
+      },
+      "sentences": {
+        "before": 46361,
+        "removed": 6273,
+        "share": 0.13530769396691184
+      }
+    },
+    "ablation_lexicon_version": 1,
+    "ablation_terms": 85,
     "classes": [
       "Cell.membrane",
       "Cytoplasm",
@@ -42,6 +250,7 @@
       "Plastid"
     ],
     "cohort": "annotated subset",
+    "embed_batch_size": 8,
     "majority_class_accuracy": 0.3047,
     "proteins": 12626,
     "result_sequence+free-text": {
@@ -49,6 +258,24 @@
       "accuracy_sd": 0.0013,
       "macro_f1": 0.7496,
       "macro_f1_sd": 0.0033
+    },
+    "result_sequence+free-text-ablated": {
+      "accuracy": 0.8164,
+      "accuracy_sd": 0.001,
+      "macro_f1": 0.661,
+      "macro_f1_sd": 0.0086
+    },
+    "result_sequence+free-text-cleaned": {
+      "accuracy": 0.8495,
+      "accuracy_sd": 0.002,
+      "macro_f1": 0.7517,
+      "macro_f1_sd": 0.0028
+    },
+    "result_sequence+free-text-random-ablated": {
+      "accuracy": 0.8222,
+      "accuracy_sd": 0.0032,
+      "macro_f1": 0.6674,
+      "macro_f1_sd": 0.0048
     },
     "result_sequence+structured": {
       "accuracy": 0.9384,
@@ -74,6 +301,24 @@
       "macro_f1": 0.6641,
       "macro_f1_sd": 0.0119
     },
+    "result_text-only-free-ablated": {
+      "accuracy": 0.6835,
+      "accuracy_sd": 0.001,
+      "macro_f1": 0.5077,
+      "macro_f1_sd": 0.0101
+    },
+    "result_text-only-free-cleaned": {
+      "accuracy": 0.7543,
+      "accuracy_sd": 0.0032,
+      "macro_f1": 0.668,
+      "macro_f1_sd": 0.0048
+    },
+    "result_text-only-free-random-ablated": {
+      "accuracy": 0.6997,
+      "accuracy_sd": 0.0056,
+      "macro_f1": 0.5461,
+      "macro_f1_sd": 0.0031
+    },
     "result_text-only-structured": {
       "accuracy": 0.9341,
       "accuracy_sd": 0.0021,
@@ -94,94 +339,175 @@
       "test": 2534,
       "train": 8578,
       "val": 1514
-    }
+    },
+    "text_batch_size": 64
   },
   "run": "run-arms",
-  "started_at": "2026-07-30T22:55:05+00:00",
+  "started_at": "2026-07-31T14:41:11+00:00",
   "status": "completed",
   "steps": [
     {
-      "duration_seconds": 0.037,
+      "duration_seconds": 0.039,
       "name": "load prepared table"
     },
     {
-      "duration_seconds": 0.062,
+      "duration_seconds": 4.02,
+      "name": "derive text variants"
+    },
+    {
+      "duration_seconds": 0.107,
       "name": "build feature blocks"
     },
     {
-      "duration_seconds": 3.584,
+      "duration_seconds": 1.579,
+      "name": "summarize the ablation"
+    },
+    {
+      "duration_seconds": 5.274,
       "name": "seed 0: sequence-only"
     },
     {
-      "duration_seconds": 3.172,
+      "duration_seconds": 2.887,
       "name": "seed 0: text-only-free"
     },
     {
-      "duration_seconds": 1.424,
+      "duration_seconds": 2.468,
       "name": "seed 0: text-only-structured"
     },
     {
-      "duration_seconds": 1.975,
+      "duration_seconds": 2.027,
       "name": "seed 0: sequence+free-text"
     },
     {
-      "duration_seconds": 2.232,
+      "duration_seconds": 2.212,
       "name": "seed 0: sequence+structured"
     },
     {
-      "duration_seconds": 2.451,
+      "duration_seconds": 2.267,
       "name": "seed 0: shuffled-text-control"
     },
     {
-      "duration_seconds": 1.402,
+      "duration_seconds": 3.313,
+      "name": "seed 0: text-only-free-cleaned"
+    },
+    {
+      "duration_seconds": 3.19,
+      "name": "seed 0: text-only-free-ablated"
+    },
+    {
+      "duration_seconds": 2.698,
+      "name": "seed 0: text-only-free-random-ablated"
+    },
+    {
+      "duration_seconds": 2.013,
+      "name": "seed 0: sequence+free-text-cleaned"
+    },
+    {
+      "duration_seconds": 1.94,
+      "name": "seed 0: sequence+free-text-ablated"
+    },
+    {
+      "duration_seconds": 1.955,
+      "name": "seed 0: sequence+free-text-random-ablated"
+    },
+    {
+      "duration_seconds": 2.101,
       "name": "seed 1: sequence-only"
     },
     {
-      "duration_seconds": 1.717,
+      "duration_seconds": 2.661,
       "name": "seed 1: text-only-free"
     },
     {
-      "duration_seconds": 1.655,
+      "duration_seconds": 2.895,
       "name": "seed 1: text-only-structured"
     },
     {
-      "duration_seconds": 1.868,
+      "duration_seconds": 2.016,
       "name": "seed 1: sequence+free-text"
     },
     {
-      "duration_seconds": 2.332,
+      "duration_seconds": 2.051,
       "name": "seed 1: sequence+structured"
     },
     {
-      "duration_seconds": 2.146,
+      "duration_seconds": 1.987,
       "name": "seed 1: shuffled-text-control"
     },
     {
-      "duration_seconds": 1.977,
+      "duration_seconds": 2.575,
+      "name": "seed 1: text-only-free-cleaned"
+    },
+    {
+      "duration_seconds": 2.29,
+      "name": "seed 1: text-only-free-ablated"
+    },
+    {
+      "duration_seconds": 2.269,
+      "name": "seed 1: text-only-free-random-ablated"
+    },
+    {
+      "duration_seconds": 1.971,
+      "name": "seed 1: sequence+free-text-cleaned"
+    },
+    {
+      "duration_seconds": 2.081,
+      "name": "seed 1: sequence+free-text-ablated"
+    },
+    {
+      "duration_seconds": 1.911,
+      "name": "seed 1: sequence+free-text-random-ablated"
+    },
+    {
+      "duration_seconds": 3.094,
       "name": "seed 2: sequence-only"
     },
     {
-      "duration_seconds": 3.502,
+      "duration_seconds": 2.463,
       "name": "seed 2: text-only-free"
     },
     {
-      "duration_seconds": 2.066,
+      "duration_seconds": 3.137,
       "name": "seed 2: text-only-structured"
     },
     {
-      "duration_seconds": 2.789,
+      "duration_seconds": 2.757,
       "name": "seed 2: sequence+free-text"
     },
     {
-      "duration_seconds": 2.988,
+      "duration_seconds": 2.898,
       "name": "seed 2: sequence+structured"
     },
     {
-      "duration_seconds": 2.731,
+      "duration_seconds": 2.6,
       "name": "seed 2: shuffled-text-control"
     },
     {
-      "duration_seconds": 0.004,
+      "duration_seconds": 3.301,
+      "name": "seed 2: text-only-free-cleaned"
+    },
+    {
+      "duration_seconds": 3.336,
+      "name": "seed 2: text-only-free-ablated"
+    },
+    {
+      "duration_seconds": 2.782,
+      "name": "seed 2: text-only-free-random-ablated"
+    },
+    {
+      "duration_seconds": 2.032,
+      "name": "seed 2: sequence+free-text-cleaned"
+    },
+    {
+      "duration_seconds": 2.063,
+      "name": "seed 2: sequence+free-text-ablated"
+    },
+    {
+      "duration_seconds": 2.126,
+      "name": "seed 2: sequence+free-text-random-ablated"
+    },
+    {
+      "duration_seconds": 0.003,
       "name": "write results"
     }
   ]
