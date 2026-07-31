@@ -124,10 +124,13 @@ def test_embed_sequences_takes_no_embedding_dim_argument() -> None:
     """Embedding width is fixed by the checkpoint, never chosen by the caller.
 
     A caller wanting a different width adds a projection in the downstream head,
-    so no width parameter should ever appear here.
+    so no width parameter should ever appear here. The parameter set grew for
+    issue #11, which added the readout and the positions it needs; the invariant
+    pinned here is the absence of a width knob, not the arity.
     """
     params = set(inspect.signature(embeddings.embed_sequences).parameters)
-    assert params == {"model", "sequences", "batch_size"}
+    assert params == {"model", "sequences", "batch_size", "readout", "positions"}
+    assert "embedding_dim" not in params
 
 
 def test_cached_embeddings_receives_everything_its_cache_key_needs() -> None:
@@ -141,7 +144,7 @@ def test_truncation_limit_leaves_room_for_bos_and_eos() -> None:
 
 
 def spec_for(model_name: str = "model-a") -> dict:
-    return embeddings.sequence_embedding_spec(model_name)
+    return embeddings.sequence_embedding_spec(model_name, readout="mean")
 
 
 def test_cache_key_changes_with_the_model() -> None:
@@ -187,7 +190,11 @@ def counting_embedder(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return model_name
 
     def fake_embed_sequences(
-        model: Any, sequences: list[str], batch_size: int
+        model: Any,
+        sequences: list[str],
+        batch_size: int,
+        readout: str,
+        positions: list[int] | None,
     ) -> np.ndarray:
         width = EXPECTED_WIDTHS.get(str(model), 8)
         return np.ones((len(sequences), width), dtype=np.float32)
@@ -202,11 +209,15 @@ def test_cached_embeddings_computes_then_reuses(
 ) -> None:
     cache_path = tmp_path / "seq.npz"
 
-    first = embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    first = embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
     assert cache_path.exists()
     assert counting_embedder == [SMALL_CHECKPOINT]
 
-    second = embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    second = embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
     np.testing.assert_array_equal(first, second)
     assert counting_embedder == [SMALL_CHECKPOINT], "cache hit should not recompute"
 
@@ -216,8 +227,12 @@ def test_cached_embeddings_recomputes_when_the_model_changes(
 ) -> None:
     """A changed model must never silently hit a cache written by another one."""
     cache_path = tmp_path / "seq.npz"
-    small = embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
-    tiny = embeddings.cached_embeddings(SEQUENCES, TINY_CHECKPOINT, cache_path, 2)
+    small = embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
+    tiny = embeddings.cached_embeddings(
+        SEQUENCES, TINY_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
 
     assert counting_embedder == [SMALL_CHECKPOINT, TINY_CHECKPOINT]
     assert small.shape[1] != tiny.shape[1]
@@ -227,9 +242,16 @@ def test_cached_embeddings_recomputes_when_the_inputs_change(
     tmp_path: Path, counting_embedder: list[str]
 ) -> None:
     cache_path = tmp_path / "seq.npz"
-    before = embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    before = embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
     after = embeddings.cached_embeddings(
-        [*SEQUENCES, "MKV"], SMALL_CHECKPOINT, cache_path, 2
+        [*SEQUENCES, "MKV"],
+        SMALL_CHECKPOINT,
+        cache_path,
+        2,
+        readout="mean",
+        positions=None,
     )
     assert after.shape[0] == before.shape[0] + 1
     assert len(counting_embedder) == 2
@@ -319,7 +341,9 @@ def test_load_esm2_rejects_a_non_esm2_name() -> None:
 @pytest.mark.network
 def test_embed_sequences_returns_one_row_per_sequence() -> None:
     bundle = embeddings.load_esm2(SMALL_CHECKPOINT)
-    out = embeddings.embed_sequences(bundle, SEQUENCES, batch_size=2)
+    out = embeddings.embed_sequences(
+        bundle, SEQUENCES, batch_size=2, readout="mean", positions=None
+    )
 
     assert out.shape == (len(SEQUENCES), EXPECTED_WIDTHS[SMALL_CHECKPOINT])
     assert np.isfinite(out).all()
@@ -329,9 +353,11 @@ def test_embed_sequences_returns_one_row_per_sequence() -> None:
 def test_embed_sequences_is_invariant_to_batch_size() -> None:
     """Batching is a throughput knob and must not change the vectors."""
     bundle = embeddings.load_esm2(SMALL_CHECKPOINT)
-    one_at_a_time = embeddings.embed_sequences(bundle, SEQUENCES, batch_size=1)
+    one_at_a_time = embeddings.embed_sequences(
+        bundle, SEQUENCES, batch_size=1, readout="mean", positions=None
+    )
     all_at_once = embeddings.embed_sequences(
-        bundle, SEQUENCES, batch_size=len(SEQUENCES)
+        bundle, SEQUENCES, batch_size=len(SEQUENCES), readout="mean", positions=None
     )
     np.testing.assert_allclose(one_at_a_time, all_at_once, rtol=1e-4, atol=1e-5)
 
@@ -340,8 +366,12 @@ def test_embed_sequences_is_invariant_to_batch_size() -> None:
 def test_embed_sequences_excludes_padding_from_pooling() -> None:
     """A short sequence must embed the same alone as beside a long one."""
     bundle = embeddings.load_esm2(SMALL_CHECKPOINT)
-    alone = embeddings.embed_sequences(bundle, [SEQUENCES[0]], batch_size=1)
-    padded = embeddings.embed_sequences(bundle, SEQUENCES, batch_size=len(SEQUENCES))
+    alone = embeddings.embed_sequences(
+        bundle, [SEQUENCES[0]], batch_size=1, readout="mean", positions=None
+    )
+    padded = embeddings.embed_sequences(
+        bundle, SEQUENCES, batch_size=len(SEQUENCES), readout="mean", positions=None
+    )
     np.testing.assert_allclose(alone[0], padded[0], rtol=1e-4, atol=1e-5)
 
 
@@ -350,7 +380,9 @@ def test_embed_sequences_truncates_overlong_sequences() -> None:
     """Past the position limit the call must truncate rather than fail."""
     bundle = embeddings.load_esm2(TINY_CHECKPOINT)
     long_sequence = "M" + "A" * (embeddings.MAX_SEQUENCE_LENGTH + 500)
-    out = embeddings.embed_sequences(bundle, [long_sequence], batch_size=1)
+    out = embeddings.embed_sequences(
+        bundle, [long_sequence], batch_size=1, readout="mean", positions=None
+    )
     assert out.shape == (1, EXPECTED_WIDTHS[TINY_CHECKPOINT])
     assert np.isfinite(out).all()
 
@@ -365,7 +397,7 @@ def test_embed_sequences_truncates_overlong_sequences() -> None:
 
 def test_cache_key_changes_with_the_truncation_limit() -> None:
     """The exact case demonstrated in issue #4: 0.48 divergence, silently served."""
-    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT, readout="mean")
     longer = {**spec, "max_sequence_length": spec["max_sequence_length"] + 1}
     assert embeddings._cache_key(SEQUENCES, spec) != embeddings._cache_key(
         SEQUENCES, longer
@@ -373,7 +405,7 @@ def test_cache_key_changes_with_the_truncation_limit() -> None:
 
 
 def test_cache_key_changes_with_the_implementation_version() -> None:
-    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT, readout="mean")
     bumped = {**spec, "impl_version": spec["impl_version"] + 1}
     assert embeddings._cache_key(SEQUENCES, spec) != embeddings._cache_key(
         SEQUENCES, bumped
@@ -382,7 +414,7 @@ def test_cache_key_changes_with_the_implementation_version() -> None:
 
 @pytest.mark.parametrize("field", ["pooling", "repr_layer_policy", "dtype"])
 def test_cache_key_changes_with_any_semantic_field(field: str) -> None:
-    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT, readout="mean")
     altered = {**spec, field: "something-else"}
     assert embeddings._cache_key(SEQUENCES, spec) != embeddings._cache_key(
         SEQUENCES, altered
@@ -392,7 +424,7 @@ def test_cache_key_changes_with_any_semantic_field(field: str) -> None:
 def test_text_and_sequence_specs_never_collide() -> None:
     """Same model name, different modality, must not share a cache entry."""
     assert embeddings._cache_key(
-        SEQUENCES, embeddings.sequence_embedding_spec("m")
+        SEQUENCES, embeddings.sequence_embedding_spec("m", readout="mean")
     ) != embeddings._cache_key(SEQUENCES, embeddings.text_embedding_spec("m"))
 
 
@@ -415,11 +447,15 @@ def test_changing_the_truncation_limit_forces_a_recompute(
     cache_path = tmp_path / "seq.npz"
 
     monkeypatch.setattr(embeddings, "MAX_SEQUENCE_LENGTH", 100)
-    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
     assert counting_embedder == [SMALL_CHECKPOINT]
 
     monkeypatch.setattr(embeddings, "MAX_SEQUENCE_LENGTH", 200)
-    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
     assert (
         counting_embedder == [SMALL_CHECKPOINT] * 2
     ), "changing the truncation limit must recompute, not serve stale vectors"
@@ -434,8 +470,12 @@ def test_changing_batch_size_alone_still_hits_the_cache(
     a 100-minute recompute for no correctness gain.
     """
     cache_path = tmp_path / "seq.npz"
-    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
-    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 8)
+    embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
+    embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 8, readout="mean", positions=None
+    )
     assert counting_embedder == [SMALL_CHECKPOINT], "batch_size must not be keyed"
 
 
@@ -444,12 +484,16 @@ def test_cache_file_records_the_spec_that_produced_it(
 ) -> None:
     """A cache file should explain itself rather than hold an opaque hash."""
     cache_path = tmp_path / "seq.npz"
-    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
 
     with np.load(cache_path, allow_pickle=False) as payload:
         assert embeddings.SPEC_FIELD in payload
         stored = json.loads(str(payload[embeddings.SPEC_FIELD]))
-    assert stored == embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    assert stored == embeddings.sequence_embedding_spec(
+        SMALL_CHECKPOINT, readout="mean"
+    )
 
 
 def test_cache_miss_reports_which_field_changed(
@@ -461,18 +505,22 @@ def test_cache_miss_reports_which_field_changed(
     """A recompute should never be mysterious."""
     cache_path = tmp_path / "seq.npz"
     monkeypatch.setattr(embeddings, "MAX_SEQUENCE_LENGTH", 100)
-    embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+    embeddings.cached_embeddings(
+        SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+    )
 
     monkeypatch.setattr(embeddings, "MAX_SEQUENCE_LENGTH", 200)
     with caplog.at_level("INFO"):
-        embeddings.cached_embeddings(SEQUENCES, SMALL_CHECKPOINT, cache_path, 2)
+        embeddings.cached_embeddings(
+            SEQUENCES, SMALL_CHECKPOINT, cache_path, 2, readout="mean", positions=None
+        )
 
     assert "max_sequence_length" in caplog.text
     assert "100" in caplog.text and "200" in caplog.text
 
 
 def test_cache_miss_distinguishes_changed_inputs_from_changed_code() -> None:
-    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT)
+    spec = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT, readout="mean")
     assert "inputs themselves changed" in embeddings._describe_cache_miss(spec, spec)
     assert "predates spec tracking" in embeddings._describe_cache_miss(None, spec)
 
@@ -565,7 +613,9 @@ def test_embed_sequences_preserves_input_order_under_bucketing() -> None:
     bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
     sequences = varied_sequences()
 
-    out = embeddings.embed_sequences(bundle, sequences, batch_size=3)
+    out = embeddings.embed_sequences(
+        bundle, sequences, batch_size=3, readout="mean", positions=None
+    )
 
     assert out.shape == (len(sequences), STUB_WIDTH)
     for row, sequence in enumerate(sequences):
@@ -582,7 +632,9 @@ def test_embed_sequences_pools_only_residue_positions() -> None:
     bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
     sequences = ["ACDEF", "A" * 40]
 
-    out = embeddings.embed_sequences(bundle, sequences, batch_size=2)
+    out = embeddings.embed_sequences(
+        bundle, sequences, batch_size=2, readout="mean", positions=None
+    )
 
     np.testing.assert_allclose(
         out[0], expected_vector(sequences[0], STUB_WIDTH, STUB_LIMIT), rtol=1e-6
@@ -595,7 +647,9 @@ def test_embed_sequences_batches_by_length_rather_than_dataset_order() -> None:
     bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
     sequences = varied_sequences()
 
-    embeddings.embed_sequences(bundle, sequences, batch_size=3)
+    embeddings.embed_sequences(
+        bundle, sequences, batch_size=3, readout="mean", positions=None
+    )
 
     seen = bundle.model.batches
     assert sorted(length for batch in seen for length in batch) == sorted(
@@ -617,10 +671,14 @@ def test_embed_sequences_is_invariant_to_batch_size_offline() -> None:
     bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
     sequences = varied_sequences()
 
-    one_at_a_time = embeddings.embed_sequences(bundle, sequences, batch_size=1)
-    in_fives = embeddings.embed_sequences(bundle, sequences, batch_size=5)
+    one_at_a_time = embeddings.embed_sequences(
+        bundle, sequences, batch_size=1, readout="mean", positions=None
+    )
+    in_fives = embeddings.embed_sequences(
+        bundle, sequences, batch_size=5, readout="mean", positions=None
+    )
     all_at_once = embeddings.embed_sequences(
-        bundle, sequences, batch_size=len(sequences)
+        bundle, sequences, batch_size=len(sequences), readout="mean", positions=None
     )
 
     np.testing.assert_allclose(one_at_a_time, in_fives, rtol=1e-6)
@@ -632,7 +690,9 @@ def test_embed_sequences_truncates_offline() -> None:
     bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
     overlong = "M" + "A" * (STUB_LIMIT + 100)
 
-    out = embeddings.embed_sequences(bundle, [overlong], batch_size=1)
+    out = embeddings.embed_sequences(
+        bundle, [overlong], batch_size=1, readout="mean", positions=None
+    )
 
     np.testing.assert_allclose(
         out[0], expected_vector(overlong, STUB_WIDTH, STUB_LIMIT), rtol=1e-6
@@ -641,14 +701,20 @@ def test_embed_sequences_truncates_offline() -> None:
 
 def test_embed_sequences_rejects_empty_input() -> None:
     with pytest.raises(AssertionError, match="no sequences"):
-        embeddings.embed_sequences(stub_bundle(STUB_WIDTH, STUB_LIMIT), [], 4)
+        embeddings.embed_sequences(
+            stub_bundle(STUB_WIDTH, STUB_LIMIT), [], 4, readout="mean", positions=None
+        )
 
 
 @pytest.mark.parametrize("batch_size", [0, -1])
 def test_embed_sequences_rejects_nonpositive_batch_size(batch_size: int) -> None:
     with pytest.raises(AssertionError, match="batch_size"):
         embeddings.embed_sequences(
-            stub_bundle(STUB_WIDTH, STUB_LIMIT), ["ACDEF"], batch_size
+            stub_bundle(STUB_WIDTH, STUB_LIMIT),
+            ["ACDEF"],
+            batch_size,
+            readout="mean",
+            positions=None,
         )
 
 
@@ -672,7 +738,9 @@ def test_embed_sequences_matches_the_frozen_reference() -> None:
         checkpoint = str(payload["checkpoint"])
 
     bundle = embeddings.load_esm2(checkpoint)
-    actual = embeddings.embed_sequences(bundle, sequences, batch_size=4)
+    actual = embeddings.embed_sequences(
+        bundle, sequences, batch_size=4, readout="mean", positions=None
+    )
 
     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-5)
 
@@ -688,7 +756,14 @@ GOLDEN_ITEMS = ["MKTFFVLLL", "MGSSHHHHHH"]
 
 
 def test_cache_key_is_stable_for_the_recorded_spec() -> None:
-    spec = embeddings.sequence_embedding_spec("esm2_t12_35M_UR50D")
+    """The mean-pool key must survive issue #11 unchanged.
+
+    `sequence_embedding_spec` gained a required `readout` argument, but the spec
+    value it records for mean pooling is byte-identical to the one that was there
+    before, so every cached vector Project 1 produced stays valid and its arms
+    must still reproduce bit-for-bit. An unchanged key here is that guarantee.
+    """
+    spec = embeddings.sequence_embedding_spec("esm2_t12_35M_UR50D", readout="mean")
     assert embeddings._cache_key(GOLDEN_ITEMS, spec) == GOLDEN_SPEC_KEY, (
         "the embedding spec changed. If that was intended, bump "
         "EMBEDDING_IMPL_VERSION where required and update GOLDEN_SPEC_KEY here."
@@ -713,3 +788,197 @@ def test_filtered_text_gets_a_different_cache_key_than_the_raw_text() -> None:
     ablated = ["Catalyzes the reaction."]
 
     assert embeddings._cache_key(raw, spec) != embeddings._cache_key(ablated, spec)
+
+
+# --- Per-residue readouts for single-substitution variants (issue #11) --------
+#
+# The DMS ladder needs a representation of a variant that differs from the wild
+# type at one residue. Mean pooling over a 400-residue protein moves that vector
+# by one part in 400, so the readout is a first-class axis of the experiment
+# rather than a preprocessing detail, and it is keyed into the cache like one.
+
+
+def expected_residue_vector(sequence: str, index: int, width: int) -> np.ndarray:
+    """The single-residue vector StubEsm2Model implies, computed by hand."""
+    return np.array(
+        [float(ord(sequence[index]) + offset) for offset in range(width)],
+        dtype=np.float32,
+    )
+
+
+def test_at_position_readout_returns_that_residue_vector() -> None:
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    sequences = ["MKTFF", "GGWWA"]
+    positions = [2, 4]
+
+    out = embeddings.embed_sequences(
+        bundle, sequences, batch_size=2, readout="at_position", positions=positions
+    )
+
+    for row, (sequence, index) in enumerate(zip(sequences, positions)):
+        np.testing.assert_allclose(
+            out[row], expected_residue_vector(sequence, index, STUB_WIDTH)
+        )
+
+
+def test_at_position_readout_never_reads_a_special_token() -> None:
+    """POISON in every non-residue slot turns an off-by-one into a wild number.
+
+    The BOS token shifts residue i to token position i+1, so a readout that
+    forgets the offset reads BOS for position 0 and the neighbouring residue
+    everywhere else. The first case is caught by POISON; this pins both.
+    """
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    sequences = ["MKTFF"]
+
+    out = embeddings.embed_sequences(
+        bundle, sequences, batch_size=1, readout="at_position", positions=[0]
+    )
+
+    assert np.isfinite(out).all()
+    assert (out > StubEsm2Model.POISON / 2).all()
+    np.testing.assert_allclose(out[0], expected_residue_vector("MKTFF", 0, STUB_WIDTH))
+
+
+def test_at_position_readout_is_unaffected_by_batch_neighbours() -> None:
+    """Padding a short sequence beside a long one must not move its residue."""
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    short = "MKT"
+
+    alone = embeddings.embed_sequences(
+        bundle, [short], batch_size=1, readout="at_position", positions=[1]
+    )
+    padded = embeddings.embed_sequences(
+        bundle,
+        [short, "M" * 40],
+        batch_size=2,
+        readout="at_position",
+        positions=[1, 20],
+    )
+
+    np.testing.assert_allclose(alone[0], padded[0])
+
+
+def test_at_position_readout_preserves_input_order_under_bucketing() -> None:
+    """Same failure mode as the pooled path: a permuted matrix trains happily.
+
+    Length-bucketed batching reorders the work, so the positions have to travel
+    with their sequences rather than being applied to whatever lands in the slot.
+    """
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    sequences = ["M" * 20, "K" * 3, "T" * 11, "F" * 7, "W" * 2]
+    positions = [19, 0, 5, 6, 1]
+
+    out = embeddings.embed_sequences(
+        bundle, sequences, batch_size=2, readout="at_position", positions=positions
+    )
+
+    for row, (sequence, index) in enumerate(zip(sequences, positions)):
+        np.testing.assert_allclose(
+            out[row], expected_residue_vector(sequence, index, STUB_WIDTH)
+        )
+
+
+def test_mean_readout_rejects_positions() -> None:
+    """Passing positions to a pooled readout is a caller confusion, not a no-op."""
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    with pytest.raises(AssertionError):
+        embeddings.embed_sequences(
+            bundle, ["MKT"], batch_size=1, readout="mean", positions=[0]
+        )
+
+
+def test_at_position_readout_requires_positions() -> None:
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    with pytest.raises(AssertionError):
+        embeddings.embed_sequences(
+            bundle, ["MKT"], batch_size=1, readout="at_position", positions=None
+        )
+
+
+def test_at_position_readout_requires_one_position_per_sequence() -> None:
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    with pytest.raises(AssertionError):
+        embeddings.embed_sequences(
+            bundle,
+            ["MKT", "GGW"],
+            batch_size=2,
+            readout="at_position",
+            positions=[0],
+        )
+
+
+@pytest.mark.parametrize("index", [-1, 3, 99])
+def test_at_position_readout_rejects_out_of_range_positions(index: int) -> None:
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    with pytest.raises(AssertionError):
+        embeddings.embed_sequences(
+            bundle, ["MKT"], batch_size=1, readout="at_position", positions=[index]
+        )
+
+
+def test_at_position_readout_rejects_a_position_lost_to_truncation() -> None:
+    """A mutation past the context limit is not in the model's view at all.
+
+    Silently clamping would return the vector for a different residue, which is
+    the kind of wrong that still trains and still reports a plausible Spearman.
+    """
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    overlong = "M" * (STUB_LIMIT + 10)
+
+    with pytest.raises(AssertionError):
+        embeddings.embed_sequences(
+            bundle,
+            [overlong],
+            batch_size=1,
+            readout="at_position",
+            positions=[STUB_LIMIT + 5],
+        )
+
+
+def test_rejects_an_unknown_readout() -> None:
+    """The Literal is a static guard; this pins the runtime one behind it.
+
+    mypy rejects the bad value at the call site, which is the first line of
+    defence and is deliberately provoked here. It does not help a caller reading
+    a readout out of a config file or a command-line flag, so the assertion has
+    to exist as well.
+    """
+    bundle = stub_bundle(STUB_WIDTH, STUB_LIMIT)
+    with pytest.raises(AssertionError):
+        embeddings.embed_sequences(
+            bundle,
+            ["MKT"],
+            batch_size=1,
+            readout="median_over_residues",  # type: ignore[arg-type]
+            positions=None,
+        )
+
+
+def test_spec_records_the_readout() -> None:
+    """Two readouts of the same sequences are different vectors, so different keys."""
+    pooled = embeddings.sequence_embedding_spec(SMALL_CHECKPOINT, readout="mean")
+    residue = embeddings.sequence_embedding_spec(
+        SMALL_CHECKPOINT, readout="at_position"
+    )
+
+    assert pooled["pooling"] != residue["pooling"]
+    assert embeddings._cache_key(SEQUENCES, pooled) != embeddings._cache_key(
+        SEQUENCES, residue
+    )
+
+
+def test_cached_embeddings_keys_the_position_into_the_item(tmp_path: Path) -> None:
+    """One sequence read at two positions must not share a cache entry.
+
+    The items hashed into the key are the sequences, so without the position in
+    them the second call would hit the first call's file and return the wrong
+    residue under a key that looks valid. This is issue #4's failure mode with a
+    new way in.
+    """
+    pooled_spec = embeddings.sequence_embedding_spec(
+        SMALL_CHECKPOINT, readout="at_position"
+    )
+    first = embeddings._cache_key(["MKTFF@1"], pooled_spec)
+    second = embeddings._cache_key(["MKTFF@3"], pooled_spec)
+    assert first != second

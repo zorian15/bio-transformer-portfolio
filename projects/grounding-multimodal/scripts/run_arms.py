@@ -462,6 +462,8 @@ def build_feature_blocks(
         SEQUENCE_ENCODER,
         cache_dir / "sequence_esm2_35m.npz",
         EMBED_BATCH_SIZE,
+        readout="mean",
+        positions=None,
     )
 
     log.info(f"embedding free text with {DEFAULT_SENTENCE_ENCODER}")

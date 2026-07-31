@@ -262,7 +262,7 @@ def profile_phases(
     mirrored_total = time.monotonic() - started
 
     started = time.monotonic()
-    real = embed_sequences(model, sequences, batch_size)
+    real = embed_sequences(model, sequences, batch_size, readout="mean", positions=None)
     real_total = time.monotonic() - started
 
     np.testing.assert_allclose(out, real, rtol=1e-5, atol=1e-6)
@@ -322,6 +322,20 @@ def embed_sequences_v1(
     return out
 
 
+def embed_sequences_pooled(
+    model: Esm2Bundle, sequences: list[str], batch_size: int
+) -> np.ndarray:
+    """Current `embed_sequences` at the mean readout, in v1's calling convention.
+
+    Both arms of `--mode ab` run through `timed`, which needs one signature.
+    Issue #11 gave `embed_sequences` a required readout, so the current arm is
+    adapted here rather than teaching `timed` about arguments only one arm has.
+    Mean pooling is what v1 did, which keeps this a comparison of implementations
+    rather than of readouts.
+    """
+    return embed_sequences(model, sequences, batch_size, readout="mean", positions=None)
+
+
 def timed(
     implementation: Any, model: Esm2Bundle, sequences: list[str], batch_size: int
 ) -> tuple[float, np.ndarray]:
@@ -356,7 +370,7 @@ def compare_implementations(
     # One untimed pass per arm, so neither pays for lazily compiled kernels.
     warmup = sequences[: min(len(sequences), 8)]
     timed(embed_sequences_v1, model, warmup, batch_size)
-    timed(embed_sequences, model, warmup, batch_size)
+    timed(embed_sequences_pooled, model, warmup, batch_size)
 
     old_times: list[float] = []
     new_times: list[float] = []
@@ -365,9 +379,13 @@ def compare_implementations(
             old_seconds, old_out = timed(
                 embed_sequences_v1, model, sequences, batch_size
             )
-            new_seconds, new_out = timed(embed_sequences, model, sequences, batch_size)
+            new_seconds, new_out = timed(
+                embed_sequences_pooled, model, sequences, batch_size
+            )
         else:
-            new_seconds, new_out = timed(embed_sequences, model, sequences, batch_size)
+            new_seconds, new_out = timed(
+                embed_sequences_pooled, model, sequences, batch_size
+            )
             old_seconds, old_out = timed(
                 embed_sequences_v1, model, sequences, batch_size
             )
@@ -408,7 +426,7 @@ def benchmark(
 ) -> dict[str, Any]:
     """Time `embed_sequences` end to end and report throughput."""
     started = time.monotonic()
-    out = embed_sequences(model, sequences, batch_size)
+    out = embed_sequences(model, sequences, batch_size, readout="mean", positions=None)
     elapsed = time.monotonic() - started
 
     assert out.shape == (len(sequences), model.embedding_dim), "unexpected shape"
@@ -461,7 +479,9 @@ def write_reference(sequences: list[str], destination: Path) -> dict[str, Any]:
     chosen = [sequences[index] for index in picked]
 
     model = load_esm2(REFERENCE_CHECKPOINT)
-    vectors = embed_sequences(model, chosen, batch_size=4)
+    vectors = embed_sequences(
+        model, chosen, batch_size=4, readout="mean", positions=None
+    )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
