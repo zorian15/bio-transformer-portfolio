@@ -13,10 +13,14 @@ name: embedding-anchor
 on:
   pull_request:
     paths:
-      - src/biotp/embeddings.py
+      # The whole package, not just embeddings.py: `get_device` lives in utils
+      # and decides which backend produces the vectors, so the numbers can move
+      # from outside the file that pools them.
+      - src/biotp/**
       - tests/test_embeddings.py
       - tests/data/**
       - environment.yml
+      - pyproject.toml
       - .github/workflows/embedding-anchor.yml
   # Weekly, because the per-PR filter only catches changes made here. This
   # catches drift from underneath: a new fair-esm, a re-uploaded checkpoint.
@@ -35,6 +39,8 @@ concurrency:
 jobs:
   network-tests:
     runs-on: ubuntu-latest
+    # A stalled checkpoint download would otherwise sit at the 6-hour default.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -46,11 +52,17 @@ jobs:
       # fair-esm downloads through torch.hub, so the weights land here. The suite
       # pulls esm2_t6_8M_UR50D and esm2_t12_35M_UR50D plus their
       # contact-regression files: small, but no reason to refetch them weekly.
-      # Bump the key's version suffix to force a clean download.
+      #
+      # Keyed on the file that names the checkpoints, so adding one re-keys the
+      # cache by itself; restore-keys still seeds from the previous entry, making
+      # the new download only the difference. A constant key would instead need a
+      # human to bump it, which is the dependency this whole workflow exists to
+      # remove.
       - uses: actions/cache@v4
         with:
           path: ~/.cache/torch/hub/checkpoints
-          key: esm2-checkpoints-v1
+          key: esm2-checkpoints-${{ hashFiles('tests/test_embeddings.py') }}
+          restore-keys: esm2-checkpoints-
 
       - name: Install biotp
         shell: bash -el {0}

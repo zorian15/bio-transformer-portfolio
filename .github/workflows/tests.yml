@@ -18,6 +18,7 @@ jobs:
   # a plain Python and report in seconds rather than waiting behind the env build.
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +37,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # Generous enough for a cold conda solve, short enough that a hang surfaces
+    # the same day rather than at the 6-hour default.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

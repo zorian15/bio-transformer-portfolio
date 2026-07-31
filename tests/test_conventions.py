@@ -12,8 +12,10 @@ to these APIs as they grow, not about banning defaults everywhere.
 
 from __future__ import annotations
 
+import fnmatch
 import inspect
-import tomllib
+import itertools
+import shlex
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -102,90 +104,202 @@ def test_stub_apis_declare_no_default_arguments(module: ModuleType) -> None:
 # deselects network tests, so it protects nothing unless CI opts back in.
 #
 # The way that gap comes back is nobody noticing: a workflow gets deleted during
-# a cleanup, or the marker gets renamed, and the suite stays green because the
-# test simply stops being selected. These tests fail loudly in that case, which
-# is the whole point of pinning a convention mechanically rather than in prose.
+# a cleanup, its triggers get trimmed to save CI minutes, or the marker gets
+# renamed, and the suite stays green because the test simply stops being
+# selected. These tests fail in each of those cases, which is the whole point of
+# pinning a convention mechanically rather than in prose.
+#
+# The guards themselves are only worth having if they fail when CI is broken, so
+# each mutation they claim to catch has been checked by making it.
 
 NETWORK_MARKER = "network"
 
-# Changing any of these means the anchor no longer runs when the embedding code
-# changes, so the path filter has to keep covering them.
-PATHS_THAT_MUST_TRIGGER_THE_ANCHOR = (
+# Concrete files rather than directory prefixes. The question a path filter has
+# to answer is "would a pull request touching this file run the anchor", and that
+# is only answerable against a real path.
+#
+# utils.py is here because "the embedding path" is wider than embeddings.py:
+# `get_device` lives in utils and decides which backend produces the vectors, so
+# a change there can move the numbers while embeddings.py stays untouched.
+FILES_THAT_MUST_TRIGGER_THE_ANCHOR = (
     "src/biotp/embeddings.py",
-    "tests/data/",
+    "src/biotp/utils.py",
+    "tests/data/reference_embeddings.npz",
 )
+
+# A pull_request trigger carrying no `paths:` filter runs on everything.
+MATCHES_EVERY_FILE = ["**"]
 
 
 def workflows() -> dict[str, Any]:
     """Every workflow under .github/workflows, parsed, keyed by filename."""
     assert WORKFLOW_DIR.is_dir(), f"no workflows directory at {WORKFLOW_DIR}"
-    parsed = {}
-    for path in sorted(WORKFLOW_DIR.glob("*.yml")):
-        parsed[path.name] = yaml.safe_load(path.read_text())
-    assert parsed, f"no workflow files found in {WORKFLOW_DIR}"
-    return parsed
+
+    paths = sorted(
+        [*WORKFLOW_DIR.glob("*.yml"), *WORKFLOW_DIR.glob("*.yaml")],
+        key=lambda path: path.name,
+    )
+    assert paths, f"no workflow files found in {WORKFLOW_DIR}"
+    return {path.name: yaml.safe_load(path.read_text()) for path in paths}
 
 
-def run_steps(workflow: dict[str, Any]) -> list[str]:
+def triggers_of(workflow: dict[str, Any]) -> dict[str, Any]:
+    """The `on:` block, normalized to a dict.
+
+    YAML 1.1 reads a bare `on` as the boolean True, so the key can arrive either
+    way depending on the parser. The list form (`on: [push]`) carries no
+    per-event configuration, so it normalizes to empty bodies.
+    """
+    for key in ("on", True):
+        if key in workflow:
+            triggers = workflow[key]
+            if isinstance(triggers, list):
+                return {event: None for event in triggers}
+            assert isinstance(triggers, dict), f"unexpected `on:` block: {triggers!r}"
+            return triggers
+    raise AssertionError(f"workflow has no `on:` block: {sorted(workflow)}")
+
+
+def run_commands(workflow: dict[str, Any]) -> list[str]:
     """Every `run:` command in a workflow, flattened across its jobs."""
-    commands = []
-    for job in workflow.get("jobs", {}).values():
-        for step in job.get("steps", []):
-            if "run" in step:
-                commands.append(step["run"])
+    jobs = workflow.get("jobs")
+    assert isinstance(jobs, dict), f"workflow has no jobs: {jobs!r}"
+
+    commands: list[str] = []
+    for name, job in jobs.items():
+        steps = job.get("steps")
+        assert isinstance(steps, list), f"job {name!r} has no steps"
+        commands.extend(step["run"] for step in steps if "run" in step)
     return commands
 
 
-def workflows_running_the_network_suite() -> dict[str, Any]:
-    """Workflows that select the network tests rather than the default suite."""
-    return {
-        name: workflow
-        for name, workflow in workflows().items()
-        if any(f"-m {NETWORK_MARKER}" in command for command in run_steps(workflow))
-    }
+def shell_tokens(command: str) -> list[str]:
+    """Tokenize a `run:` command, tolerating anything shlex cannot parse.
+
+    Tokenizing rather than matching substrings is what makes quoting irrelevant,
+    so `pytest -m 'network'` and `pytest -m network` are read the same way.
+    """
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
+def marker_expression(tokens: list[str]) -> str | None:
+    """The value of pytest's `-m` flag, or None when the invocation has none."""
+    for flag, value in itertools.pairwise(tokens):
+        if flag == "-m":
+            return value
+    return None
+
+
+def workflows_running(marker: str | None) -> dict[str, Any]:
+    """Workflows with a pytest step selecting exactly this marker expression.
+
+    `marker=None` means the default suite: a pytest invocation carrying no `-m`
+    at all. Whether a command *is* pytest is checked separately from what it
+    selects, because collapsing the two makes every `run:` step in the file look
+    like a pytest run with no marker, and then every workflow appears to run the
+    tests. That is the same conflation as reading a missing `pull_request` key as
+    an absent path filter, and it hides the same kind of regression.
+    """
+    matched = {}
+    for name, workflow in workflows().items():
+        for command in run_commands(workflow):
+            tokens = shell_tokens(command)
+            if "pytest" in tokens and marker_expression(tokens) == marker:
+                matched[name] = workflow
+                break
+    return matched
+
+
+def pull_request_paths(workflow: dict[str, Any]) -> list[str] | None:
+    """The workflow's pull_request path filter.
+
+    Returns None when the workflow has no pull_request trigger at all, which is
+    the case that matters: it means no pull request can ever run this workflow.
+    That is a different thing from a pull_request trigger with no `paths:`, which
+    runs on every pull request, and conflating the two is how a guard passes
+    while the job it guards has stopped running.
+    """
+    triggers = triggers_of(workflow)
+    if "pull_request" not in triggers:
+        return None
+
+    configuration = triggers["pull_request"]
+    if configuration is None:
+        # `pull_request:` with an empty body is valid, and means every PR.
+        return MATCHES_EVERY_FILE
+    assert isinstance(
+        configuration, dict
+    ), f"unexpected pull_request block: {configuration!r}"
+
+    return configuration.get("paths") or MATCHES_EVERY_FILE
+
+
+def pattern_selects(pattern: str, file_path: str) -> bool:
+    """Whether a GitHub `paths:` pattern selects this file.
+
+    fnmatch's `*` spans `/`, which approximates GitHub's `**`. Matching as a glob
+    rather than as a literal prefix is what lets the filter be broadened, say
+    from `src/biotp/embeddings.py` to `src/biotp/**`, without failing a test that
+    the broadening does not actually violate.
+    """
+    if fnmatch.fnmatch(file_path, pattern):
+        return True
+    # A pattern naming a directory, written without a glob.
+    return file_path.startswith(pattern.rstrip("*").rstrip("/") + "/")
 
 
 def test_some_workflow_runs_the_network_suite() -> None:
-    """Without this, the frozen-reference anchor never runs anywhere but locally."""
-    assert workflows_running_the_network_suite(), (
+    """Without this, the frozen-reference anchor never runs outside a laptop."""
+    assert workflows_running(NETWORK_MARKER), (
         "no workflow runs `pytest -m network`, so "
         "test_embed_sequences_matches_the_frozen_reference only runs when a human "
         "remembers to ask for it. See issue #8."
     )
 
 
-@pytest.mark.parametrize("required_path", PATHS_THAT_MUST_TRIGGER_THE_ANCHOR)
-def test_the_network_workflow_triggers_on_embedding_changes(required_path: str) -> None:
-    """A pull request touching the embedding path must run the anchor."""
-    matching = workflows_running_the_network_suite()
+def test_some_workflow_runs_the_offline_suite() -> None:
+    """The default suite carries every other test, including these ones."""
+    assert workflows_running(
+        None
+    ), "no workflow runs the default `pytest` suite, so nothing checks it on a PR"
 
-    triggering = []
-    for name, workflow in matching.items():
-        # `on` parses as the boolean True under YAML 1.1, which reads "on" as a
-        # keyword. Accept either spelling rather than depending on the parser.
-        triggers = workflow.get("on", workflow.get(True, {}))
-        paths = triggers.get("pull_request", {}).get("paths")
-        if paths is None:
-            # No filter at all means it runs on every pull request, which covers
-            # the embedding path too.
-            triggering.append(name)
-        elif any(pattern.startswith(required_path) for pattern in paths):
-            triggering.append(name)
 
+@pytest.mark.parametrize("required_file", FILES_THAT_MUST_TRIGGER_THE_ANCHOR)
+def test_the_network_workflow_triggers_on_embedding_changes(required_file: str) -> None:
+    """A pull request touching the embedding path must run the anchor.
+
+    Trimming the workflow's triggers is at least as likely as deleting it, and it
+    leaves the file sitting there looking like protection, so this checks that a
+    pull_request trigger exists as well as that its filter covers the file.
+    """
+    candidates = workflows_running(NETWORK_MARKER)
+    assert candidates, "no workflow runs the network suite at all"
+
+    triggering = [
+        name
+        for name, workflow in candidates.items()
+        for patterns in [pull_request_paths(workflow)]
+        if patterns is not None
+        and any(pattern_selects(pattern, required_file) for pattern in patterns)
+    ]
     assert triggering, (
-        f"no network-suite workflow triggers on changes to {required_path!r}; "
-        f"checked {sorted(matching)}"
+        f"no network-suite workflow runs on a pull request touching "
+        f"{required_file!r}; checked {sorted(candidates)}"
     )
 
 
-def test_the_network_marker_is_registered() -> None:
-    """`--strict-markers` turns a renamed or typo'd marker into an error."""
-    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    pytest_config = config["tool"]["pytest"]["ini_options"]
+def test_the_network_marker_is_registered(pytestconfig: pytest.Config) -> None:
+    """Checked against pytest's resolved configuration, not the file it came from.
 
-    declared = [entry.split(":")[0] for entry in pytest_config["markers"]]
+    `--strict-markers` turns a renamed or mistyped marker into an error rather
+    than a silent selection of nothing, which is the other way a load-bearing
+    test stops running while the suite stays green.
+    """
+    declared = [entry.split(":")[0] for entry in pytestconfig.getini("markers")]
     assert NETWORK_MARKER in declared, f"{NETWORK_MARKER} is no longer registered"
-    assert "--strict-markers" in pytest_config["addopts"], (
-        "without --strict-markers a mistyped marker silently selects nothing, "
-        "which is how a load-bearing test stops running without failing"
-    )
+    assert pytestconfig.getoption(
+        "strict_markers"
+    ), "--strict-markers is not in effect, so a mistyped marker selects nothing"
