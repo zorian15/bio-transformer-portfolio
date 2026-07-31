@@ -1,0 +1,68 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Formatting and linting need neither PyTorch nor a conda solve, so they run on
+  # a plain Python and report in seconds rather than waiting behind the env build.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Unpinned to match environment.yml, which deliberately tracks the latest
+      # wheels for these three rather than pinning them.
+      - run: pip install black ruff
+
+      - run: black --check .
+
+      - run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The real environment.yml, not a CI-only subset: PyTorch has to come from
+      # conda-forge (see the comment there), and a second dependency list would
+      # drift from the one developers actually run. cache-environment makes the
+      # repeat cost small; the cache key follows environment.yml automatically.
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+
+      # Editable install, so `import biotp` resolves to the checkout rather than
+      # to nothing. Every subsequent step runs in the micromamba shell.
+      - name: Install biotp
+        shell: bash -el {0}
+        run: pip install -e .
+
+      # mypy runs inside the full env on purpose. With ignore_missing_imports and
+      # numpy or torch absent, it silently checks less and would pass here while
+      # failing locally.
+      - name: Type check
+        shell: bash -el {0}
+        run: mypy src projects tests
+
+      # The default suite, which deselects network tests. Those run in
+      # embedding-anchor.yml, where the checkpoint download is cached.
+      - name: Test
+        shell: bash -el {0}
+        run: pytest

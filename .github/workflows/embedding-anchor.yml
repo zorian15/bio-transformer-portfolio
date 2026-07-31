@@ -1,0 +1,65 @@
+name: embedding-anchor
+
+# Runs the network suite, whose load-bearing member is
+# test_embed_sequences_matches_the_frozen_reference: it checks the current code
+# against tests/data/reference_embeddings.npz, 24 vectors written by the
+# pre-#3 implementation. That is the only test that would catch the embedding
+# path drifting away from the code that produced the committed results, and a
+# wrong or stale embedding is a silent failure: the numbers stay plausible.
+#
+# Split from tests.yml because it downloads checkpoints, so it wants a cache and
+# a narrower trigger. See issue #8.
+
+on:
+  pull_request:
+    paths:
+      - src/biotp/embeddings.py
+      - tests/test_embeddings.py
+      - tests/data/**
+      - environment.yml
+      - .github/workflows/embedding-anchor.yml
+  # Weekly, because the per-PR filter only catches changes made here. This
+  # catches drift from underneath: a new fair-esm, a re-uploaded checkpoint.
+  # Note GitHub disables scheduled runs after 60 days of repository inactivity.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: embedding-anchor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  network-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+
+      # fair-esm downloads through torch.hub, so the weights land here. The suite
+      # pulls esm2_t6_8M_UR50D and esm2_t12_35M_UR50D plus their
+      # contact-regression files: small, but no reason to refetch them weekly.
+      # Bump the key's version suffix to force a clean download.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch/hub/checkpoints
+          key: esm2-checkpoints-v1
+
+      - name: Install biotp
+        shell: bash -el {0}
+        run: pip install -e .
+
+      # The anchor's tolerance is rtol=1e-4, atol=1e-5, and the reference vectors
+      # were written on Apple MPS while this runner is CPU. That gap was measured
+      # before relying on it: max absolute difference 9.5e-7, about a 10x margin.
+      # A failure here means the embedding code moved, not that the device did.
+      - name: Network tests
+        shell: bash -el {0}
+        run: pytest -m network
