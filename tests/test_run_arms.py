@@ -23,8 +23,10 @@ from pathlib import Path
 from types import ModuleType
 
 import numpy as np
+import pandas as pd
 import pytest
 
+from biotp import text_ablation
 from biotp.text_ablation import ablate_sentences, compile_term_pattern
 
 SCRIPT_PATH = (
@@ -192,9 +194,9 @@ def test_filter_removes_every_hand_labeled_positive() -> None:
 )
 def test_filter_keeps_every_hand_labeled_negative(sentence: str) -> None:
     """Each is asserted separately, because each encodes its own design decision."""
-    assert not is_removed(sentence), (
-        f"the filter removed functional prose that states no location: {sentence!r}"
-    )
+    assert not is_removed(
+        sentence
+    ), f"the filter removed functional prose that states no location: {sentence!r}"
 
 
 def test_perinuclear_is_a_term_not_an_accident_of_matching() -> None:
@@ -258,6 +260,68 @@ def test_the_ablation_arms_are_present_alongside_the_unfiltered_ones() -> None:
     } <= names
 
 
+# --- Deriving the text variants ------------------------------------------------
+
+
+def variants_table() -> pd.DataFrame:
+    """Three proteins: one the filter empties, one it trims, one it leaves alone."""
+    return pd.DataFrame(
+        {
+            "accession": ["P00001", "P00002", "P00003"],
+            "function_text": [
+                "FUNCTION: Mitochondrial carrier protein. {ECO:0000269|PubMed:1}.",
+                (
+                    "FUNCTION: Localizes to the nucleus. Catalyzes the reduction of "
+                    "3'-oxosphinganine. Binds ATP."
+                ),
+                "FUNCTION: Peptide transporter. Has no effect on thrombin.",
+            ],
+            "localization": ["Mitochondrion", "Nucleus", "Cell.membrane"],
+        }
+    )
+
+
+def test_build_text_variants_ablates_trims_and_leaves_alone() -> None:
+    """The three cases the ablation has to handle, in one table."""
+    variants = run_arms.build_text_variants(variants_table(), (0,))
+
+    assert variants.ablated[0] == "", "a single localization sentence must empty it"
+    assert variants.ablated[1] == (
+        "Catalyzes the reduction of 3'-oxosphinganine. Binds ATP."
+    )
+    assert variants.ablated[2] == "Peptide transporter. Has no effect on thrombin."
+
+
+def test_build_text_variants_cleans_without_ablating() -> None:
+    """The cleaned arm strips bookkeeping and nothing else, which is its whole job."""
+    variants = run_arms.build_text_variants(variants_table(), (0,))
+
+    assert variants.cleaned[0] == "Mitochondrial carrier protein."
+    assert "ECO" not in variants.cleaned[0]
+    assert "FUNCTION" not in variants.cleaned[0]
+
+
+def test_build_text_variants_random_control_is_length_matched() -> None:
+    """The control must remove as many sentences as the ablation did, per protein."""
+    variants = run_arms.build_text_variants(variants_table(), (0,))
+
+    for index, result in enumerate(variants.results):
+        kept = len(text_ablation.split_sentences(variants.random_ablated[0][index]))
+        assert kept == len(result.kept), (
+            f"row {index}: control kept {kept} sentences, ablation kept "
+            f"{len(result.kept)}; the arms are not length-matched"
+        )
+
+
+def test_build_text_variants_gives_each_seed_its_own_draw() -> None:
+    """Otherwise the control's reported spread hides the draw variance."""
+    variants = run_arms.build_text_variants(variants_table(), (0, 1, 2))
+
+    assert set(variants.random_ablated) == {0, 1, 2}
+    for texts in variants.random_ablated.values():
+        assert len(texts) == 3
+
+
 @pytest.mark.parametrize("block_name", sorted(run_arms.TEXT_BLOCKS))
 def test_the_shuffle_rule_covers_every_text_block(block_name: str) -> None:
     """A text block the shuffle rule misses turns the control into a grounded arm.
@@ -271,9 +335,9 @@ def test_the_shuffle_rule_covers_every_text_block(block_name: str) -> None:
     arm = run_arms.Arm("probe", (block_name,), True, "test")
 
     features = run_arms.assemble_features(arm, blocks, np.arange(rows), 0)
-    assert not np.array_equal(features, identity), (
-        f"{block_name} was not permuted despite shuffle_text=True"
-    )
+    assert not np.array_equal(
+        features, identity
+    ), f"{block_name} was not permuted despite shuffle_text=True"
 
 
 def test_seed_dependent_blocks_resolve_to_that_seeds_copy() -> None:

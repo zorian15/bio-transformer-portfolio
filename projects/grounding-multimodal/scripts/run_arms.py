@@ -1,4 +1,4 @@
-"""Run the six arms of the grounding experiment and write a metrics table.
+"""Run the twelve arms of the grounding experiment and write a metrics table.
 
 Each arm trains the same head architecture, on the same splits, with the same
 frozen encoders. Only the input features differ, so a difference between arms is
@@ -349,15 +349,15 @@ TEXT_BLOCKS = frozenset(
 SEED_DEPENDENT_BLOCKS = frozenset({"text_free_random_ablated"})
 
 _REFERENCED_BLOCKS = {name for arm in ARMS for name in arm.blocks}
-assert _REFERENCED_BLOCKS <= TEXT_BLOCKS | {"sequence"}, (
-    f"unclassified feature blocks: {sorted(_REFERENCED_BLOCKS - TEXT_BLOCKS - {'sequence'})}"
-)
+assert _REFERENCED_BLOCKS <= TEXT_BLOCKS | {
+    "sequence"
+}, f"unclassified feature blocks: {sorted(_REFERENCED_BLOCKS - TEXT_BLOCKS - {'sequence'})}"
 assert not any(
     arm.shuffle_text and set(arm.blocks) & SEED_DEPENDENT_BLOCKS for arm in ARMS
 ), "an arm cannot both permute a block and redraw it per seed"
-assert len({arm.name for arm in ARMS}) == len(ARMS), (
-    "arm names must be unique; summarize groups by name and would merge duplicates"
-)
+assert len({arm.name for arm in ARMS}) == len(
+    ARMS
+), "arm names must be unique; summarize groups by name and would merge duplicates"
 
 
 def load_table(path: Path) -> pd.DataFrame:
@@ -433,6 +433,20 @@ def build_text_variants(table: pd.DataFrame, seeds: tuple[int, ...]) -> TextVari
         assert len(texts) == len(table), f"{name} text misaligned with the table"
     for seed, texts in variants.random_ablated.items():
         assert len(texts) == len(table), f"random-ablated seed {seed} misaligned"
+
+    # The decomposition in the writeup rests entirely on the cleaned-versus-ablated
+    # contrast, so the two variants must differ by the filter and by nothing else.
+    # For a protein the filter did not touch they have to be identical text; if the
+    # cleaner and the splitter ever disagree, that difference would be silently
+    # attributed to leakage.
+    for index, result in enumerate(results):
+        if not result.removed:
+            rejoined = " ".join(split_sentences(variants.cleaned[index]))
+            assert variants.ablated[index] == rejoined, (
+                f"row {index} lost no sentence to the filter, yet its ablated text "
+                "differs from its cleaned text; the two arms would then differ by "
+                "something other than the compartment vocabulary"
+            )
     return variants
 
 

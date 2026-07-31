@@ -99,9 +99,9 @@ def clean_annotation_text(text: str) -> str:
     the sentence count and, worse, keeps a fully ablated protein looking non-empty,
     which is exactly the statistic the ablation turns on.
     """
-    assert not any(mark in text for mark in _PROTECTED.values()), (
-        "input contains a private protection codepoint"
-    )
+    assert not any(
+        mark in text for mark in _PROTECTED.values()
+    ), "input contains a private protection codepoint"
 
     cleaned = EVIDENCE_CODES.sub("", text)
     cleaned = INLINE_CITATIONS.sub("", cleaned)
@@ -131,9 +131,9 @@ def split_sentences(text: str) -> list[str]:
     Punctuation-only fragments are dropped rather than returned, so a caller
     counting sentences counts claims.
     """
-    assert not any(mark in text for mark in _PROTECTED.values()), (
-        "input contains a private protection codepoint"
-    )
+    assert not any(
+        mark in text for mark in _PROTECTED.values()
+    ), "input contains a private protection codepoint"
 
     protected = text
     for abbreviation in ABBREVIATIONS:
@@ -281,13 +281,25 @@ def ablation_summary(
         "silently attribute one protein's removal to another's class"
     )
 
+    # A protein whose whole field is bookkeeping (`FUNCTION: {ECO:...}.`) cleans to
+    # nothing, and there is no honest retention to report for it: counting it as
+    # 1.0 would say "kept everything" about text the cleaner deleted, and counting
+    # it as 0.0 would blame the filter. It would also be tallied as emptied but not
+    # as trimmed, breaking the subset relation the removal figure draws. No such
+    # protein exists in this corpus, so this asserts rather than picking a default.
+    # If one ever appears, the caller must decide, loudly, which bucket it belongs in.
+    empty_before = [
+        index for index, result in enumerate(results) if not result.characters_before
+    ]
+    assert not empty_before, (
+        f"{len(empty_before)} results have no characters before filtering, so their "
+        f"retention is undefined (first at index {empty_before[0]}); such a protein "
+        "was emptied by the cleaner rather than by the ablation and needs its own "
+        "bucket, not a default retention"
+    )
+
     retention = np.array(
-        [
-            result.characters_after / result.characters_before
-            if result.characters_before
-            else 1.0
-            for result in results
-        ]
+        [result.characters_after / result.characters_before for result in results]
     )
     sentences_before = sum(len(r.kept) + len(r.removed) for r in results)
     sentences_removed = sum(len(r.removed) for r in results)
@@ -307,6 +319,12 @@ def ablation_summary(
 
     trimmed = sum(1 for result in results if result.removed)
     emptied = sum(1 for result in results if not result.kept)
+    # An emptied protein is always a trimmed one. The removal figure draws the
+    # emptied share inside the trimmed bar and would render nonsense otherwise.
+    assert emptied <= trimmed, (
+        f"{emptied} proteins emptied but only {trimmed} trimmed; emptied must be a "
+        "subset of trimmed, and the removal figure draws it as one"
+    )
     return {
         "proteins": len(results),
         "proteins_trimmed": {"count": trimmed, "share": trimmed / len(results)},

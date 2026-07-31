@@ -517,7 +517,11 @@ def main() -> None:
 
     with run_context("make-figures", log_dir=args.log_dir, params=vars(args)) as run:
         with run.step("check every arm is drawn"):
-            assert_every_arm_is_drawn(args.results_dir / "arms_all.csv")
+            # Both cohorts, because they carry the same arms and only the `_all`
+            # one is plotted: a new arm missing from the annotated table would
+            # otherwise go unnoticed until someone read that file.
+            for cohort in ("all", "annotated"):
+                assert_every_arm_is_drawn(args.results_dir / f"arms_{cohort}.csv")
 
         with run.step("arm comparison"):
             written = plot_arms(

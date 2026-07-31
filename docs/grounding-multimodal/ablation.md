@@ -191,6 +191,12 @@ the 12,626 annotated proteins:
 These are the honest bound on what the ablation leaves behind. Full counts are in
 `projects/grounding-multimodal/results/ablation_all.json`.
 
+Two caveats on reading that file. Nested terms double-count, so `secretory` and
+`secretory pathway` both fire on the same sentence. And the bare `ER` count is the
+least trustworthy of the set, for the same reason `ER` was kept out of the filter:
+matching is case-insensitive, so a two-letter token picks up whatever happens to
+look like it. Treat that row as a loose upper bound rather than a measurement.
+
 **3. The text-only ablated arm (any residual signal).** This is the strongest of
 the three and costs nothing, because the arm is in the table anyway. A word list
 finds only enumerated synonyms; a classifier trained on ablated text alone finds
