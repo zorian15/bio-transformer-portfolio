@@ -693,3 +693,23 @@ def test_cache_key_is_stable_for_the_recorded_spec() -> None:
         "the embedding spec changed. If that was intended, bump "
         "EMBEDDING_IMPL_VERSION where required and update GOLDEN_SPEC_KEY here."
     )
+
+
+# --- Text variants invalidate by their inputs, not a version bump (issue #5) ---
+
+
+def test_filtered_text_gets_a_different_cache_key_than_the_raw_text() -> None:
+    """Why the localization ablation needs no EMBEDDING_IMPL_VERSION bump.
+
+    The filter runs upstream of the encoder, so the item strings change and the
+    key changes with them. The embedding code itself is untouched, which is why
+    GOLDEN_SPEC_KEY above still passes unmodified in the same commit.
+
+    Pinned so nobody later "optimizes" by writing several text variants into one
+    cache file, which would serve one variant's vectors under another's name.
+    """
+    spec = embeddings.text_embedding_spec(embeddings.DEFAULT_SENTENCE_ENCODER)
+    raw = ["Localizes to the mitochondrion. Catalyzes the reaction."]
+    ablated = ["Catalyzes the reaction."]
+
+    assert embeddings._cache_key(raw, spec) != embeddings._cache_key(ablated, spec)

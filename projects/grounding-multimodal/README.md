@@ -12,7 +12,8 @@ Does grounding a protein-sequence representation in text (functional annotations
 ## Writeup
 - [Introduction](../../docs/grounding-multimodal/introduction.md): the question, biological and ML framing, objectives, evaluation criteria.
 - [Data](../../docs/grounding-multimodal/data.md): inputs, labels, provenance, preprocessing decisions, splits.
-- [Method](../../docs/grounding-multimodal/method.md): splits, head, metrics, and the six-arm runner.
-- [Results](../../docs/grounding-multimodal/results.md): six-arm numbers and interpretation.
+- [Method](../../docs/grounding-multimodal/method.md): splits, head, metrics, and the twelve-arm runner.
+- [Ablation filter](../../docs/grounding-multimodal/ablation.md): the filter that removes localization-stating sentences, its vocabulary, and the judgement calls behind it.
+- [Results](../../docs/grounding-multimodal/results.md): twelve-arm numbers and interpretation, including how much of the free-text gain is leakage.
 
 See `../../PLANNING.md` for full context. Log runs in `DECISION_LOG.md`.

@@ -116,7 +116,7 @@ against.
 Both are encoded with `all-MiniLM-L6-v2` (384-dimensional) and combined with the
 sequence embedding by concatenation.
 
-### An unresolved preprocessing question: evidence codes
+### A resolved preprocessing question: evidence codes
 
 The example above shows something that affects 96.0% of the function
 descriptions: UniProt appends provenance markers such as
@@ -130,10 +130,21 @@ input, so evidence codes displace real text on longer descriptions. Every
 description also begins with the literal prefix `FUNCTION: `, which is constant
 across all 12,626 proteins and therefore carries no information.
 
-Whether to strip these before encoding is not yet decided, and the current
-pipeline leaves the text as UniProt returns it. Stripping is very likely correct,
-but it changes every text embedding, so it belongs in a deliberate rebuild with
-the before-and-after numbers recorded rather than as a quiet edit.
+This has now been measured rather than argued. Stripping the codes, the inline
+`(PubMed:...)` citations and the `FUNCTION: ` prefix removes 22% of the corpus by
+character count, and it moves no arm materially: the cleaned free-text arm scores
+0.743 macro-F1 against the unfiltered 0.740, inside one standard deviation. The
+prediction that evidence codes displace real text under the encoder's token limit
+was reasonable and turned out not to bite, because most descriptions are short
+enough not to be truncated.
+
+The pipeline therefore still feeds the headline arm text exactly as UniProt
+returns it, which keeps the committed baseline comparable with earlier runs, and
+carries the cleaned variant as its own arm so the choice stays visible. Cleaning
+also runs as the first step of the localization ablation, where it matters for a
+different reason: an evidence code following a sentence-final period leaves an
+orphan `.` that the sentence splitter would otherwise count as a claim. See
+[Ablation filter](ablation.md).
 
 ### Coverage, and why it matters
 

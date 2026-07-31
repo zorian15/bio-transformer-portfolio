@@ -33,6 +33,7 @@ Lives in `src/biotp/`.
 - ESM-2 embedding extraction (`embeddings.py`): load a small ESM-2 checkpoint (e.g. 35M or 150M), produce per-sequence embeddings, cache to disk. Frozen embeddings keep everything cheap.
 - Fine-tuning harness (`training.py`): swap between linear probe, LoRA, and full fine-tune behind one interface.
 - Evaluation harness with leakage-aware splits (`evaluation.py`): held-out entities (proteins / families / epitopes / donors), not random rows. Leakage-aware splits are the methodological backbone of these experiments, so make them a first-class feature.
+- Leakage ablation for annotation text (`text_ablation.py`): strip database bookkeeping from curated prose, split it into sentences, drop the sentences stating the label according to a caller-supplied vocabulary, and report how much was removed. Leakage-aware splits handle a leak *across* the split; this handles a leak *inside* the input. The vocabulary stays with the project that owns the task: subcellular compartments for Project 1, epitope names for Project 3.
 - Release template (`release.py`): repo layout, environment lockfile, model card, weights pushed to the Hugging Face Hub, reproducible run scripts.
 
 ---

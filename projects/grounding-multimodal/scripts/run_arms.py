@@ -1,4 +1,4 @@
-"""Run the six arms of the grounding experiment and write a metrics table.
+"""Run the twelve arms of the grounding experiment and write a metrics table.
 
 Each arm trains the same head architecture, on the same splits, with the same
 frozen encoders. Only the input features differ, so a difference between arms is
@@ -39,6 +39,17 @@ from biotp.evaluation import (
     per_class_f1,
 )
 from biotp.runlog import DEFAULT_LOG_DIR, get_logger, run_context
+from biotp.text_ablation import (
+    AblationResult,
+    ablate_sentences,
+    ablation_summary,
+    clean_annotation_text,
+    compile_term_pattern,
+    random_ablate_sentences,
+    sentence_seed,
+    split_sentences,
+    term_mention_counts,
+)
 from biotp.training import build_head, predict, train
 from biotp.utils import set_seed
 
@@ -53,6 +64,177 @@ STRUCTURED_FIELDS = (
     "go_molecular_function",
     "keywords",
 )
+
+# The localization vocabulary for the grounding-versus-leakage ablation (issue #5).
+# A sentence mentioning any of these is dropped from the free-text variant, so the
+# ablated arm cannot read the compartment out of the prose.
+#
+# The lexicon prefers recall over precision, deliberately. A false negative, a
+# synonym missed here, leaves the answer in the text and biases the result toward
+# "grounding" invisibly. A false positive removes real functional content, which
+# looks like leakage but is visible, because the length-matched random control
+# removes just as much from the same proteins. Terms were counted against the
+# corpus before being included; see docs/grounding-multimodal/ablation.md.
+COMPARTMENT_TERMS: dict[str, tuple[str, ...]] = {
+    "Cell.membrane": (
+        "cell membrane",
+        "plasma membrane",
+        "cytoplasmic membrane",
+        "plasmalemma",
+        "sarcolemma",
+        "cell surface",
+        "apical membrane",
+        "basolateral membrane",
+    ),
+    "Cytoplasm": ("cytoplasm", "cytoplasmic", "cytosol", "cytosolic"),
+    "Endoplasmic.reticulum": (
+        "endoplasmic reticulum",
+        "sarcoplasmic reticulum",
+        "microsome",
+        "microsomal",
+        # Bare "ER" is deliberately absent: case-insensitive matching would make it
+        # noise. The phrases it actually appears in are enumerated instead.
+        "ER lumen",
+        "ER membrane",
+        "ER stress",
+        "ER-associated",
+        "ER exit",
+    ),
+    "Extracellular": (
+        "extracellular",
+        "extracellular space",
+        "extracellular matrix",
+        "secreted",
+        "apoplast",
+        "periplasm",
+        "periplasmic",
+        "blood plasma",
+    ),
+    "Golgi.apparatus": ("golgi", "trans-golgi network", "TGN"),
+    "Lysosome/Vacuole": (
+        "lysosome",
+        "lysosomal",
+        "vacuole",
+        "vacuolar",
+        "tonoplast",
+        "endolysosome",
+        "autolysosome",
+        "lytic vacuole",
+    ),
+    "Mitochondrion": (
+        "mitochondrion",
+        "mitochondria",
+        "mitochondrial",
+        "mitochondrially",
+        "mitochondrial matrix",
+        "intermembrane space",
+        "cristae",
+        "mitoribosome",
+    ),
+    "Nucleus": (
+        "nucleus",
+        "nuclei",
+        "nuclear",
+        "nucleoplasm",
+        "nucleolus",
+        "nucleoli",
+        "nucleolar",
+        "perinuclear",
+        "nuclear pore",
+        "nuclear envelope",
+        "nuclear lamina",
+    ),
+    "Peroxisome": (
+        "peroxisome",
+        "peroxisomal",
+        "glyoxysome",
+        "glyoxysomal",
+        "peroxisome targeting signal",
+        "PTS1",
+        "PTS2",
+    ),
+    "Plastid": (
+        "plastid",
+        "chloroplast",
+        "thylakoid",
+        "amyloplast",
+        "chromoplast",
+        "etioplast",
+        "plastoglobule",
+        # Bare "stroma" is deliberately absent: all 21 corpus mentions are animal
+        # connective tissue ("stromal cells"), not the plastid compartment.
+        "chloroplast stroma",
+        "stromal thylakoid",
+    ),
+    # Not a compartment, but the verbs and signals that state a location. Kept as
+    # its own group so its marginal contribution is measured rather than assumed:
+    # these almost always co-occur with a compartment noun that already fires.
+    "localization_language": (
+        "localizes to",
+        "localized to",
+        "localization signal",
+        "targeted to",
+        "targeting signal",
+        "translocates to",
+        "translocated to",
+        "signal peptide",
+        "transit peptide",
+        "retention signal",
+    ),
+}
+
+# Phrases that contain a lexicon term without stating a location. A sentence is
+# kept only when an exclusion accounts for all of its matches, so "the nuclear
+# receptor is retained in the nucleus" is still removed. Every entry here is a
+# deliberate false negative, the dangerous direction, so the list stays short and
+# each entry is tested by name.
+COMPARTMENT_EXCLUSIONS: tuple[str, ...] = (
+    "nuclear receptor",
+    "nuclear factor",
+    "nuclear hormone receptor",
+    "cytoplasmic tail",
+    "cytoplasmic domain",
+    "cytoplasmic side",
+    "cytoplasmic face",
+    "cytoplasmic dynein",
+)
+
+# Location-adjacent words deliberately left out of the filter, measured on the
+# surviving text as the false-negative probe. Each is either cross-class (one word
+# for two compartments), or names something that is not a DeepLoc class, or is
+# functional prose the experiment is about. `chromatin` is the sharpest of these:
+# it is a near-perfect Nucleus indicator, but "chromatin remodeling" is exactly the
+# functional content the grounding hypothesis concerns, so it is measured, not cut.
+SENTINEL_TERMS: tuple[str, ...] = (
+    "membrane",
+    "organelle",
+    "lumen",
+    "vesicle",
+    "envelope",
+    "endosome",
+    "granule",
+    "matrix",
+    "chromatin",
+    "nucleosome",
+    "secretion",
+    "secretory",
+    "secretory pathway",
+    "stroma",
+    "stromal",
+    "cell wall",
+    "ER",
+    "compartment",
+    "intracellular",
+    "microtubule",
+    "cytoskeleton",
+    "nucleoid",
+)
+
+# The embedding cache invalidates automatically when the lexicon changes, because
+# the filtered strings change and the cache key hashes its inputs. The reported
+# statistics would change silently, though, so the lexicon carries a version the
+# way EMBEDDING_IMPL_VERSION does, making a DECISION_LOG entry citable.
+ABLATION_LEXICON_VERSION = 1
 
 # Train/validation fractions carved out of the non-test pool. The third entry is
 # zero because the test split is DeepLoc's, not ours to re-derive.
@@ -105,7 +287,77 @@ ARMS = (
         True,
         "detects gains not tied to this protein's text",
     ),
+    # The grounding-versus-leakage ablation (issue #5). Appended rather than
+    # interleaved so the first six rows of the results table diff cleanly against
+    # the committed MVP numbers. Arm order does not affect any result: run_arm
+    # reseeds before every fit.
+    Arm(
+        "text-only-free-cleaned",
+        ("text_free_cleaned",),
+        False,
+        "prose alone, database bookkeeping removed",
+    ),
+    Arm(
+        "text-only-free-ablated",
+        ("text_free_ablated",),
+        False,
+        "prose alone, compartment sentences removed",
+    ),
+    Arm(
+        "text-only-free-random-ablated",
+        ("text_free_random_ablated",),
+        False,
+        "prose alone, as much text removed at random",
+    ),
+    Arm(
+        "sequence+free-text-cleaned",
+        ("sequence", "text_free_cleaned"),
+        False,
+        "isolates the evidence-code confound",
+    ),
+    Arm(
+        "sequence+free-text-ablated",
+        ("sequence", "text_free_ablated"),
+        False,
+        "the ablation: grounding or leakage",
+    ),
+    Arm(
+        "sequence+free-text-random-ablated",
+        ("sequence", "text_free_random_ablated"),
+        False,
+        "length-matched control for the ablation",
+    ),
 )
+
+# Which blocks are text, and so may be permuted for the shuffled control. This is
+# an explicit set rather than a name prefix test: a block named `free_text_...`
+# would silently be left unshuffled, quietly turning the control into a second
+# grounded arm.
+TEXT_BLOCKS = frozenset(
+    {
+        "text_free",
+        "text_structured",
+        "text_free_cleaned",
+        "text_free_ablated",
+        "text_free_random_ablated",
+    }
+)
+
+# Blocks whose contents depend on the run seed, so each seed gets a fresh draw and
+# the reported spread includes draw variance rather than treating one draw as the
+# truth. These are stored per seed and looked up as `{name}_seed{seed}`.
+SEED_DEPENDENT_BLOCKS = frozenset({"text_free_random_ablated"})
+
+_REFERENCED_BLOCKS = {name for arm in ARMS for name in arm.blocks}
+assert _REFERENCED_BLOCKS <= TEXT_BLOCKS | {
+    "sequence"
+}, f"unclassified feature blocks: {sorted(_REFERENCED_BLOCKS - TEXT_BLOCKS - {'sequence'})}"
+assert not any(
+    arm.shuffle_text and set(arm.blocks) & SEED_DEPENDENT_BLOCKS for arm in ARMS
+), "an arm cannot both permute a block and redraw it per seed"
+assert len({arm.name for arm in ARMS}) == len(
+    ARMS
+), "arm names must be unique; summarize groups by name and would merge duplicates"
 
 
 def load_table(path: Path) -> pd.DataFrame:
@@ -128,7 +380,79 @@ def structured_text(table: pd.DataFrame) -> list[str]:
     return [text.strip("; ").strip() for text in joined]
 
 
-def build_feature_blocks(table: pd.DataFrame, cache_dir: Path) -> dict[str, np.ndarray]:
+@dataclass(frozen=True)
+class TextVariants:
+    """The four free-text conditions, each aligned to the table's rows.
+
+    Deriving these separately from embedding them keeps the derivation testable
+    without a sentence encoder, and keeps the expensive step ignorant of the
+    scientific judgement in the lexicon.
+    """
+
+    cleaned: list[str]
+    ablated: list[str]
+    random_ablated: dict[int, list[str]]
+    results: list[AblationResult]
+
+
+def build_text_variants(table: pd.DataFrame, seeds: tuple[int, ...]) -> TextVariants:
+    """Derive the cleaned, ablated and length-matched-random free-text variants.
+
+    The random variant removes the same *number* of sentences as the ablation did
+    for that protein, drawn per protein from a seed that encodes the accession, so
+    the draw does not depend on row order or on which cohort is being run. That
+    matching is what makes the ablation interpretable: it empties the same proteins,
+    and so hands out the same population of zero vectors, leaving the compartment
+    vocabulary as the only difference between the two arms.
+    """
+    pattern = compile_term_pattern(
+        tuple(term for group in COMPARTMENT_TERMS.values() for term in group)
+    )
+    exclusions = compile_term_pattern(COMPARTMENT_EXCLUSIONS)
+
+    raw = table["function_text"].fillna("").tolist()
+    accessions = table["accession"].tolist()
+    results = [ablate_sentences(text, pattern, exclusions) for text in raw]
+
+    variants = TextVariants(
+        cleaned=[clean_annotation_text(text) for text in raw],
+        ablated=[" ".join(result.kept) for result in results],
+        random_ablated={
+            seed: [
+                random_ablate_sentences(
+                    text, len(result.removed), sentence_seed(accession, seed)
+                )
+                for text, result, accession in zip(raw, results, accessions)
+            ]
+            for seed in seeds
+        },
+        results=results,
+    )
+
+    for name, texts in [("cleaned", variants.cleaned), ("ablated", variants.ablated)]:
+        assert len(texts) == len(table), f"{name} text misaligned with the table"
+    for seed, texts in variants.random_ablated.items():
+        assert len(texts) == len(table), f"random-ablated seed {seed} misaligned"
+
+    # The decomposition in the writeup rests entirely on the cleaned-versus-ablated
+    # contrast, so the two variants must differ by the filter and by nothing else.
+    # For a protein the filter did not touch they have to be identical text; if the
+    # cleaner and the splitter ever disagree, that difference would be silently
+    # attributed to leakage.
+    for index, result in enumerate(results):
+        if not result.removed:
+            rejoined = " ".join(split_sentences(variants.cleaned[index]))
+            assert variants.ablated[index] == rejoined, (
+                f"row {index} lost no sentence to the filter, yet its ablated text "
+                "differs from its cleaned text; the two arms would then differ by "
+                "something other than the compartment vocabulary"
+            )
+    return variants
+
+
+def build_feature_blocks(
+    table: pd.DataFrame, variants: TextVariants, cache_dir: Path
+) -> dict[str, np.ndarray]:
     """Compute (or load) one embedding matrix per modality, aligned to table rows."""
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -156,14 +480,38 @@ def build_feature_blocks(table: pd.DataFrame, cache_dir: Path) -> dict[str, np.n
         TEXT_BATCH_SIZE,
     )
 
+    # Each variant gets its own cache file. Sharing one path between two inputs
+    # would make every run miss and recompute, permanently alternating between the
+    # two, so the separate files are what keep all of them warm.
+    log.info("embedding the free-text ablation variants")
     blocks = {
         "sequence": sequence,
         "text_free": text_free,
         "text_structured": text_structured,
+        "text_free_cleaned": cached_text_embeddings(
+            variants.cleaned,
+            DEFAULT_SENTENCE_ENCODER,
+            cache_dir / "text_free_cleaned_minilm.npz",
+            TEXT_BATCH_SIZE,
+        ),
+        "text_free_ablated": cached_text_embeddings(
+            variants.ablated,
+            DEFAULT_SENTENCE_ENCODER,
+            cache_dir / "text_free_ablated_minilm.npz",
+            TEXT_BATCH_SIZE,
+        ),
     }
+    for seed, texts in variants.random_ablated.items():
+        blocks[f"text_free_random_ablated_seed{seed}"] = cached_text_embeddings(
+            texts,
+            DEFAULT_SENTENCE_ENCODER,
+            cache_dir / f"text_free_random_ablated_seed{seed}_minilm.npz",
+            TEXT_BATCH_SIZE,
+        )
+
     for name, block in blocks.items():
         assert len(block) == len(table), f"{name} embeddings misaligned with table"
-        log.info(f"  {name:16} {block.shape}")
+        log.info(f"  {name:36} {block.shape}")
     return blocks
 
 
@@ -176,11 +524,20 @@ def assemble_features(
     slicing, so each protein keeps its own sequence but receives some other
     protein's annotation. The permutation is seeded, and it is applied to the whole
     dataset rather than within a split, mirroring the real pairing being broken.
+
+    Seed-dependent blocks resolve to that seed's copy, so the random-ablation
+    control draws afresh per seed rather than reusing one draw three times.
     """
     columns = []
     for block_name in arm.blocks:
-        block = blocks[block_name]
-        if arm.shuffle_text and block_name.startswith("text"):
+        key = (
+            f"{block_name}_seed{seed}"
+            if block_name in SEED_DEPENDENT_BLOCKS
+            else block_name
+        )
+        assert key in blocks, f"{arm.name} wants block {key!r}, which was not built"
+        block = blocks[key]
+        if arm.shuffle_text and block_name in TEXT_BLOCKS:
             permutation = np.random.default_rng(seed).permutation(len(block))
             block = block[permutation]
         columns.append(block[row_order])
@@ -236,6 +593,31 @@ def run_arm(
         "balanced_accuracy": metrics["balanced_accuracy"],
         "per_class_f1": per_class_f1(true_names, predicted_names),
         "predictions": predicted_names,
+    }
+
+
+def _random_control_retention(
+    results: list[AblationResult], random_texts: list[str]
+) -> dict[str, float]:
+    """Character retention of the length-matched control, for comparison.
+
+    The control matches the number of sentences removed, not the number of
+    characters, and localization sentences need not be average length. Reporting
+    both retentions makes any gap visible rather than assumed away.
+    """
+    assert len(results) == len(random_texts), "control texts misaligned with results"
+
+    before = sum(result.characters_before for result in results)
+    assert before > 0, "no annotated characters to compare against"
+
+    # Count the control the same way AblationResult does, as a sum over sentence
+    # lengths, so the two retentions are commensurate.
+    after = sum(
+        len(sentence) for text in random_texts for sentence in split_sentences(text)
+    )
+    return {
+        "ablated_retention": sum(r.characters_after for r in results) / before,
+        "random_retention": after / before,
     }
 
 
@@ -364,20 +746,61 @@ def main() -> int:
         run.record("embed_batch_size", EMBED_BATCH_SIZE)
         run.record("text_batch_size", TEXT_BATCH_SIZE)
 
+        run.record("ablation_lexicon_version", ABLATION_LEXICON_VERSION)
+        run.record(
+            "ablation_terms",
+            len({term for group in COMPARTMENT_TERMS.values() for term in group}),
+        )
+
+        with run.step("derive text variants"):
+            variants = build_text_variants(table, SEEDS)
+
         with run.step("build feature blocks"):
             blocks = build_feature_blocks(
-                table, args.data_root / "processed" / "embeddings"
+                table, variants, args.data_root / "processed" / "embeddings"
             )
 
         cohort = "all proteins"
+        results = variants.results
         if args.annotated_only:
             # Subset after embedding, so cached vectors are shared with the full run.
             keep = table.index[table["has_function_text"]].to_numpy()
             table = table.loc[keep].reset_index(drop=True)
             blocks = {name: block[keep] for name, block in blocks.items()}
+            results = [variants.results[index] for index in keep]
             cohort = "annotated subset"
         run.record("cohort", cohort)
         run.record("proteins", len(table))
+
+        # The ablation statistics describe the annotated proteins within whichever
+        # cohort is running, since a protein with no text has nothing to ablate and
+        # would otherwise dilute every retention figure toward 100%.
+        with run.step("summarize the ablation"):
+            annotated = table.index[table["has_function_text"]].to_numpy()
+            ablation = ablation_summary(
+                [results[index] for index in annotated],
+                table["localization"].iloc[annotated].tolist(),
+            )
+            ablation["lexicon_version"] = ABLATION_LEXICON_VERSION
+            ablation["residual_sentinel_mentions"] = term_mention_counts(
+                [" ".join(results[index].kept) for index in annotated],
+                SENTINEL_TERMS,
+            )
+            # The random control matches sentence count, not character count, so
+            # its retention is recorded too: if the two diverge materially, the
+            # comparison is not as clean as the design intends and should say so.
+            ablation["random_control_retention"] = _random_control_retention(
+                [results[index] for index in annotated],
+                [variants.random_ablated[SEEDS[0]][index] for index in annotated],
+            )
+            run.record("ablation", ablation)
+            log.info(
+                "ablation: %d/%d proteins trimmed, %d emptied, %.1f%% of characters kept",
+                ablation["proteins_trimmed"]["count"],
+                ablation["proteins"],
+                ablation["proteins_emptied"]["count"],
+                100 * ablation["characters"]["corpus_retention"],
+            )
 
         class_names = sorted(table["localization"].unique())
         label_index = {name: index for index, name in enumerate(class_names)}
@@ -427,6 +850,9 @@ def main() -> int:
                     sort_keys=True,
                 )
             )
+            (args.results_dir / f"ablation_{suffix}.json").write_text(
+                json.dumps(ablation, indent=2, sort_keys=True)
+            )
             for _, row in summary.iterrows():
                 run.record(
                     f"result_{row['arm']}",
@@ -437,6 +863,24 @@ def main() -> int:
                         "macro_f1_sd": round(row["macro_f1_sd"], 4),
                     },
                 )
+
+            # Per-seed macro-F1, not just the mean and spread. The ablation's
+            # leakage claim rests on a paired comparison: the ablated arm sits
+            # below its length-matched control in every seed, by less than either
+            # arm's own standard deviation. Aggregates cannot show that, so
+            # without these numbers the claim would cite a run log that git does
+            # not keep. See the CLAUDE.md run-logging convention.
+            run.record(
+                "per_seed_macro_f1",
+                {
+                    arm.name: {
+                        str(result["seed"]): round(result["macro_f1"], 4)
+                        for result in runs
+                        if result["arm"] == arm.name
+                    }
+                    for arm in ARMS
+                },
+            )
 
         # A copy of the manifest beside the committed metrics, so a number in the
         # writeup can be traced to the commit and device that produced it. Deferred

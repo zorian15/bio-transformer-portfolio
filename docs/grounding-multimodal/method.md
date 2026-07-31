@@ -1,11 +1,11 @@
-# Method: splits, head, and the six-arm runner
+# Method: splits, head, and the twelve-arm runner
 
-**Status:** implemented and tested; results pending. See
+**Status:** implemented and tested. See
 [introduction.md](introduction.md) for the question and
 [data.md](data.md) for the inputs.
 
 This page describes the machinery: how splits are made, what the trained model
-actually is, and how the six arms are run and compared. All of it is shared
+actually is, and how the twelve arms are run and compared. All of it is shared
 infrastructure in the `biotp` package except the runner, which is
 project-specific.
 
@@ -144,6 +144,27 @@ On this test split that is 0.291 (Nucleus). Note it is an *accuracy* floor, not 
 macro-F1 floor: a constant predictor scores macro-F1 \(\approx 0.045\), since it
 earns a nonzero \(F1_c\) on one class out of ten.
 
+The ablation reports two further quantities. Writing \(c_i^{\text{before}}\) and
+\(c_i^{\text{after}}\) for the number of sentence characters protein \(i\) carries
+before and after filtering, over the \(M\) annotated proteins:
+
+\[
+\rho_i = \frac{c_i^{\text{after}}}{c_i^{\text{before}}},
+\qquad
+\rho_{\text{corpus}} = \frac{\sum_{i=1}^{M} c_i^{\text{after}}}{\sum_{i=1}^{M} c_i^{\text{before}}}.
+\]
+
+Both are reported, because they answer different questions: \(\rho_{\text{corpus}}\)
+says how much of the corpus survived, while the median and 10th percentile of
+\(\rho_i\) say whether the loss is spread evenly or concentrated. Here they
+disagree sharply, which is the point: \(\rho_{\text{corpus}} = 0.836\) while the
+median \(\rho_i\) is exactly 1.0.
+
+Characters are counted over sentences rather than over the raw field, so the two
+ends are commensurate: splitting discards the whitespace between sentences, and
+comparing a raw length against a rejoined one would report a loss that never
+happened.
+
 Where a metric carries \(\pm\), it is the standard deviation across the three
 seeds, not a confidence interval over proteins. It measures pipeline sensitivity
 to initialization and split, which is the quantity that decides whether an arm
@@ -159,21 +180,33 @@ Two deliberate omissions and one substitution:
   holding 1.1% of the data, "never predicted" is an expected outcome to measure,
   not a crash.
 
-## The six-arm runner
+## The twelve-arm runner
 
 `projects/grounding-multimodal/scripts/run_arms.py` is the experiment itself.
 
-Its job is to make the six arms differ in exactly one respect: which feature
-blocks the head is allowed to see. Everything else is deliberately shared.
+Its job is to make the arms differ in exactly one respect: which feature blocks
+the head is allowed to see. Everything else is deliberately shared.
 
-**Three feature blocks are embedded once**, cached to disk, and reused by every
-arm and every seed:
+**Feature blocks are embedded once**, cached to disk, and reused by every arm and
+every seed:
 
 | Block | Encoder | Width |
 |---|---|---:|
 | `sequence` | ESM-2 35M | 480 |
 | `text_free` | MiniLM over function text | 384 |
 | `text_structured` | MiniLM over GO terms and keywords | 384 |
+| `text_free_cleaned` | MiniLM over function text, bookkeeping stripped | 384 |
+| `text_free_ablated` | MiniLM over function text, compartment sentences removed | 384 |
+| `text_free_random_ablated` | MiniLM over function text, as many sentences removed at random | 384 |
+
+The last three are the grounding-versus-leakage ablation; how they are derived is
+in [Ablation filter](ablation.md). Each lands in its own cache file: sharing one
+path between two inputs would make every run miss and recompute, alternating
+between them forever.
+
+`text_free_random_ablated` is the one block whose contents depend on the run seed,
+so it is stored per seed and redrawn for each. That way the control's reported
+spread includes draw variance rather than treating a single draw as the truth.
 
 Because the cache is keyed on the inputs, the encoder name, and the embedding code
 itself (see [embedding cache](../embedding-cache.md)), re-running to change the
@@ -203,11 +236,18 @@ if violated:
 - Embeddings computed once and shared, so no arm gets a differently-encoded view
   of the same protein.
 - The test split is untouched during training and model selection.
+- **The cohort is defined once, by `has_function_text` on the raw text, and is
+  never redefined per text variant.** The ablation can empty a protein's text, and
+  letting that change which rows the arm sees would give different arms different
+  data, which is exactly the invariant above. An emptied protein stays in the
+  cohort and receives a zero vector, and the count of such proteins is reported
+  rather than hidden.
 
 **Outputs** land in `projects/grounding-multimodal/results/`: a CSV of per-arm
-aggregates, a Markdown table with the majority-class floor stated alongside, and
-per-class F1 as JSON. These are small text files and are committed, so the numbers
-in the writeup are traceable to a specific run.
+aggregates, a Markdown table with the majority-class floor stated alongside,
+per-class F1 as JSON, and the ablation statistics as `ablation_{cohort}.json`.
+These are small text files and are committed, so the numbers in the writeup are
+traceable to a specific run.
 
 ## Reproducing
 

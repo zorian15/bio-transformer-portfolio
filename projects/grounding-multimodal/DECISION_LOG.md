@@ -15,6 +15,36 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-07-31: a seventh of the free-text gain is leakage, and the control is what showed it
+
+- **Question / hypothesis:** the MVP found free text worth +0.124 macro-F1 over sequence-only, with the shuffled control confirming the gain is tied to each protein's own text. That leaves the mechanism open (issue #5): is the prose carrying function (grounding), or naming the compartment (leakage)? Ablate the sentences mentioning any of the ten compartments and re-run.
+- **Setup:** new shared module `biotp.text_ablation` (clean, split into sentences, drop by a caller-supplied vocabulary, report what went). The DeepLoc compartment vocabulary lives in `scripts/run_arms.py` as `COMPARTMENT_TERMS`, `ABLATION_LEXICON_VERSION` 1, 85 terms across 10 compartments plus a `localization_language` group, with 8 exclusion phrases. Six arms became twelve: `cleaned` (bookkeeping stripped, nothing ablated), `ablated`, and `random-ablated` (the same *number* of sentences removed per protein, chosen at random), each with and without sequence. Same encoders, head, splits and seeds (0, 1, 2) as the MVP. Both cohorts re-run. Artifacts: `results/arms_all.csv`, `results/ablation_all.json`, `results/run_manifest_all.json`, and the `_annotated` counterparts.
+- **Result:** the ablation is a trim, not a corpus deletion. 30.6% of the 12,626 annotated proteins lose at least one sentence, 13.5% of sentences go, 83.6% of characters remain, and the median protein loses nothing. But 900 proteins (7.1%) end up with no text at all.
+
+  | Arm | Macro-F1 | vs sequence-only |
+  |---|---:|---:|
+  | sequence-only | 0.616 ± 0.004 | |
+  | sequence + free text | 0.740 ± 0.006 | +0.124 |
+  | sequence + cleaned text | 0.743 ± 0.004 | +0.127 |
+  | sequence + random-ablated text | 0.674 ± 0.013 | +0.058 |
+  | sequence + ablated text | 0.655 ± 0.013 | +0.039 |
+
+  **Stripping evidence codes does nothing.** 0.743 against 0.740, inside one standard deviation, despite the `{ECO:...}` markers and `FUNCTION: ` prefix being 22% of the corpus by character count. That resolves the open preprocessing question standing in `docs/grounding-multimodal/data.md` since the MVP, and resolves it as a negative.
+
+  **The headline would have been wrong without the length-matched control.** Read against the unfiltered arm, the ablation destroys 69% of the gain, which reads as a damning leakage result. Read against a control removing an equal *number* of randomly chosen sentences from the same proteins, it does not: the random arm falls to 0.674, four fifths of the way down. Decomposing the +0.124: 53% is lost by removing 13.5% of the sentences at all, 15% by those sentences being the ones that name the compartment, and 31% survives both.
+
+  **The leakage component is small but consistent.** 0.019 macro-F1 is smaller than either arm's seed spread, so the standard deviations do not settle it. The per-seed pairing does: ablated sits below the control in all three seeds, by 0.018, 0.013 and 0.026. Seeds share a split and an initialisation stream, so the paired difference resolves far better than the marginal spreads suggest.
+
+- **Two things that changed the answer, both worth recording:**
+  - **A punctuation bug hid the confound.** Evidence codes usually follow a sentence-final period, so stripping one leaves an orphan `.` that survives as its own sentence. A first pass without that cleanup reported 0.5% of proteins emptied by the filter. The true figure is 7.1%, a fourteen-fold difference, and the orphan fragments were all of it. It matters because `embed_texts` maps empty text to a zero vector and the emptied population is sharply class-skewed: Mitochondrion 26.4% and Peroxisome 22.4%, against Nucleus 2.6%. The ablated arm would have been handicapped hardest in exactly the rare compartments carrying the gain, and that handicap would have been read as leakage.
+  - **Prefer recall in the vocabulary, and pay for it with the control.** A missed synonym leaves the answer in the text and biases toward "grounding" invisibly; an over-removed sentence biases toward "leakage" but shows up as both arms falling together, which is readable. So the vocabulary is deliberately aggressive. `chromatin` is the one term left out against that rule, at 654 mentions: it is a near-perfect Nucleus indicator, but "chromatin remodeling" is exactly the functional prose the hypothesis is about, so it is measured in the sentinel probe (4.6% of surviving texts still carry it) rather than cut.
+- **Decision / next step:**
+  - The honest headline is now: text helps, a seventh of the help is the prose naming the compartment, and most of the rest is not robust to losing part of the annotation. `docs/grounding-multimodal/results.md` says so, and `docs/grounding-multimodal/ablation.md` documents the filter and its judgement calls.
+  - Every previously committed arm reproduced **bit-for-bit** in both cohorts, so the new rows can be read alongside the old. That check is cheap and it is the only thing licensing a combined table.
+  - No `EMBEDDING_IMPL_VERSION` bump, deliberately. The filter runs upstream of the encoder and the diff does not touch `biotp/embeddings.py`, so the four new text variants invalidate by their inputs and land in their own cache files. `test_cache_key_is_stable_for_the_recorded_spec` passing unmodified is the evidence.
+  - Not resolved: `text-only-ablated` still scores 0.483 against a 0.291 floor, so the filtered prose is far from information-free about localization. This design cannot say how much of that is residual leakage against genuine function signal.
+  - Open, and worth a follow-up: three seeds is thin for a *ratio* like "31% of the gain survives". The leakage claim rests on the per-seed sign test rather than the ratio's precision. Five seeds would now cost about a minute, since the sequence vectors are cached.
+
 ### 2026-07-30: embedding is 4.8x faster end to end, and padding was the cause
 
 - **Question / hypothesis:** embedding 13,858 proteins took 100 minutes at 2.3 seq/s, which dominated the pipeline and would have made the 150M and 650M checkpoints in `PLANNING.md` impractical. Issue #3 proposed three causes: padding waste from unsorted batching, per-sequence device synchronisation, and too small a batch size. Which of them actually costs the time?

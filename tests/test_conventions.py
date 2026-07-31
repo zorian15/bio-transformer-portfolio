@@ -24,12 +24,12 @@ import pytest
 import yaml
 
 import biotp
-from biotp import embeddings, evaluation, release, training
+from biotp import embeddings, evaluation, release, text_ablation, training
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
-STUB_MODULES = [embeddings, evaluation, release, training]
+STUB_MODULES = [embeddings, evaluation, release, text_ablation, training]
 
 EXPECTED_FUNCTIONS = {
     "biotp.embeddings": {
@@ -56,6 +56,19 @@ EXPECTED_FUNCTIONS = {
         "majority_class_accuracy",
     },
     "biotp.release": {"build_model_card", "push_to_hub"},
+    # Leakage ablation: strip annotation bookkeeping, split into sentences, drop
+    # the ones stating the label, and report how much went. See issue #5 and
+    # docs/grounding-multimodal/ablation.md.
+    "biotp.text_ablation": {
+        "clean_annotation_text",
+        "split_sentences",
+        "compile_term_pattern",
+        "ablate_sentences",
+        "random_ablate_sentences",
+        "sentence_seed",
+        "ablation_summary",
+        "term_mention_counts",
+    },
     "biotp.training": {"build_head", "train", "predict"},
 }
 
