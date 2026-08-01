@@ -18,11 +18,10 @@ from typing import Any
 
 import numpy as np
 import pytest
+from conftest import RESIDUE_TOKEN_IDS, tokenize_batch
 
 from biotp import zero_shot
 
-# Amino acids start above the special tokens, as in a real ESM-2 alphabet.
-STUB_TOKENS = {aa: 4 + offset for offset, aa in enumerate("ACDEFGHIKLMNPQRSTVWY")}
 STUB_MASK_IDX = 32
 STUB_VOCAB = 33
 STUB_LIMIT = 64
@@ -31,18 +30,19 @@ WILDTYPE = "MKTFFVLLLACDE"
 
 
 class StubAlphabet:
-    """Minimal stand-in for esm.data.Alphabet."""
+    """Minimal stand-in for esm.data.Alphabet.
 
-    BOS = 0
-    PAD = 1
-    EOS = 2
+    Only the mask token and the residue lookup, which is all `masked_marginal_
+    scores` reads off an alphabet. The special-token ids live in conftest,
+    because the tokenizer that writes them is shared.
+    """
 
     def __init__(self) -> None:
         self.mask_idx = STUB_MASK_IDX
 
     def get_idx(self, token: str) -> int:
-        assert token in STUB_TOKENS, f"stub alphabet has no token {token!r}"
-        return STUB_TOKENS[token]
+        assert token in RESIDUE_TOKEN_IDS, f"stub alphabet has no token {token!r}"
+        return RESIDUE_TOKEN_IDS[token]
 
 
 class StubMaskedLM:
@@ -57,19 +57,11 @@ class StubMaskedLM:
         self.batches: list[int] = []
 
     def batch_converter(self, batch: list[tuple[str, str]]) -> tuple[Any, Any, Any]:
-        import torch
-
+        # Recorded here rather than in the shared helper: only this module
+        # asserts on how scoring batched its work.
         self.batches.append(len(batch))
-        longest = max(len(sequence) for _, sequence in batch)
-        tokens = torch.full(
-            (len(batch), longest + 2), StubAlphabet.PAD, dtype=torch.long
-        )
-        for row, (_, sequence) in enumerate(batch):
-            tokens[row, 0] = StubAlphabet.BOS
-            for column, residue in enumerate(sequence):
-                tokens[row, column + 1] = STUB_TOKENS[residue]
-            tokens[row, len(sequence) + 1] = StubAlphabet.EOS
-        return [label for label, _ in batch], [text for _, text in batch], tokens
+        labels, texts, tokens = tokenize_batch(batch, RESIDUE_TOKEN_IDS)
+        return labels, texts, tokens
 
     def __call__(self, tokens: Any, repr_layers: list[int]) -> dict[str, Any]:
         import torch
@@ -104,7 +96,7 @@ def expected_score(substitutions: list[tuple[int, str, str]]) -> float:
     """The closed form the stub implies, summed over a variant's substitutions."""
     total = 0.0
     for position, wildtype_aa, mutant_aa in substitutions:
-        gap = STUB_TOKENS[mutant_aa] - STUB_TOKENS[wildtype_aa]
+        gap = RESIDUE_TOKEN_IDS[mutant_aa] - RESIDUE_TOKEN_IDS[wildtype_aa]
         total += gap * (1.0 + (position + 1))
     return total
 

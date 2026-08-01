@@ -18,6 +18,13 @@ from typing import Any
 
 import numpy as np
 import pytest
+from conftest import (
+    AMINO_ACIDS,
+    ASCII_TOKEN_IDS,
+    POISON,
+    poison_non_residues,
+    tokenize_batch,
+)
 
 from biotp import embeddings
 
@@ -63,38 +70,24 @@ class StubEsm2Model:
     the default offline suite, not one gated behind `-m network`.
     """
 
-    BOS = 0
-    PAD = 1
-    EOS = 2
-    POISON = -1e6
-
     def __init__(self, width: int) -> None:
         self.width = width
         self.batches: list[list[int]] = []
 
     def batch_converter(self, batch: list[tuple[str, str]]) -> tuple[Any, Any, Any]:
-        import torch
-
+        # Recorded here rather than in the shared helper: the length-bucketing
+        # tests assert on the composition of each batch, which no other stub
+        # cares about.
         self.batches.append([len(sequence) for _, sequence in batch])
-        longest = max(len(sequence) for _, sequence in batch)
-        tokens = torch.full((len(batch), longest + 2), self.PAD, dtype=torch.long)
-        for row, (_, sequence) in enumerate(batch):
-            tokens[row, 0] = self.BOS
-            for column, residue in enumerate(sequence):
-                tokens[row, column + 1] = ord(residue)
-            tokens[row, len(sequence) + 1] = self.EOS
-        return [label for label, _ in batch], [text for _, text in batch], tokens
+        labels, texts, tokens = tokenize_batch(batch, ASCII_TOKEN_IDS)
+        return labels, texts, tokens
 
     def __call__(self, tokens: Any, repr_layers: list[int]) -> dict[str, Any]:
         import torch
 
         offsets = torch.arange(self.width, dtype=torch.float32)
-        representations = tokens.unsqueeze(-1).float() + offsets
-        is_special = (
-            (tokens == self.BOS) | (tokens == self.PAD) | (tokens == self.EOS)
-        ).unsqueeze(-1)
-        representations = torch.where(
-            is_special, torch.full_like(representations, self.POISON), representations
+        representations = poison_non_residues(
+            tokens.unsqueeze(-1).float() + offsets, tokens
         )
         return {"representations": {layer: representations for layer in repr_layers}}
 
@@ -536,7 +529,6 @@ def test_cache_miss_distinguishes_changed_inputs_from_changed_code() -> None:
 
 STUB_WIDTH = 4
 STUB_LIMIT = 64
-AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
 # Lengths deliberately out of order, spanning a wide range, with a repeat so a
 # duplicate sequence cannot mask an ordering bug by coincidence.
@@ -836,7 +828,7 @@ def test_at_position_readout_never_reads_a_special_token() -> None:
     )
 
     assert np.isfinite(out).all()
-    assert (out > StubEsm2Model.POISON / 2).all()
+    assert (out > POISON / 2).all()
     np.testing.assert_allclose(out[0], expected_residue_vector("MKTFF", 0, STUB_WIDTH))
 
 

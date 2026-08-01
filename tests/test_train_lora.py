@@ -14,6 +14,13 @@ from typing import Any
 
 import numpy as np
 import pytest
+from conftest import (
+    AMINO_ACIDS,
+    POISON,
+    RESIDUE_TOKEN_IDS,
+    poison_non_residues,
+    tokenize_batch,
+)
 
 from biotp import training
 from biotp.embeddings import Esm2Bundle
@@ -22,8 +29,9 @@ from biotp.utils import set_seed
 WIDTH = 16
 VOCAB = 33
 LIMIT = 64
-BOS, PAD, EOS = 0, 1, 2
-TOKENS = {aa: 4 + offset for offset, aa in enumerate("ACDEFGHIKLMNPQRSTVWY")}
+
+# The single reference every split in this module mutates.
+WILDTYPE = "MKTFFVLLLACDEFGHIKLM"
 
 
 def build_tiny_encoder() -> Any:
@@ -68,22 +76,22 @@ def build_tiny_encoder() -> Any:
             hidden = self.embed_tokens(tokens)
             for layer in self.layers:
                 hidden = layer(hidden)
-            return {"representations": {layer: hidden for layer in repr_layers}}
+            # Poisoned on the way out, never before the layers: the special
+            # positions still serve as attention keys and values, so the module
+            # trains exactly as it did unpoisoned and gradients still reach the
+            # adapters through the residue rows. Unconditional on purpose. An
+            # opt-out is what let this fixture and the embedding one diverge,
+            # and a padding vector that looks like a residue vector is how the
+            # missing position guard survived review.
+            poisoned = poison_non_residues(hidden, tokens)
+            return {"representations": {layer: poisoned for layer in repr_layers}}
 
     return TinyEsm()
 
 
 def batch_converter(batch: list[tuple[str, str]]) -> tuple[Any, Any, Any]:
-    import torch
-
-    longest = max(len(sequence) for _, sequence in batch)
-    tokens = torch.full((len(batch), longest + 2), PAD, dtype=torch.long)
-    for row, (_, sequence) in enumerate(batch):
-        tokens[row, 0] = BOS
-        for column, residue in enumerate(sequence):
-            tokens[row, column + 1] = TOKENS[residue]
-        tokens[row, len(sequence) + 1] = EOS
-    return [label for label, _ in batch], [text for _, text in batch], tokens
+    labels, texts, tokens = tokenize_batch(batch, RESIDUE_TOKEN_IDS)
+    return labels, texts, tokens
 
 
 def tiny_bundle() -> Esm2Bundle:
@@ -105,18 +113,16 @@ def toy_split(count: int, seed: int) -> training.VariantSplit:
     to reduce loss has a broken optimizer rather than an impossible task.
     """
     rng = np.random.default_rng(seed)
-    residues = "ACDEFGHIKLMNPQRSTVWY"
-    wildtype = "MKTFFVLLLACDEFGHIKLM"
 
     sequences: list[str] = []
     positions: list[int] = []
     targets: list[float] = []
     for _ in range(count):
-        index = int(rng.integers(0, len(wildtype)))
-        mutant = residues[int(rng.integers(0, len(residues)))]
-        sequences.append(wildtype[:index] + mutant + wildtype[index + 1 :])
+        index = int(rng.integers(0, len(WILDTYPE)))
+        mutant = AMINO_ACIDS[int(rng.integers(0, len(AMINO_ACIDS)))]
+        sequences.append(WILDTYPE[:index] + mutant + WILDTYPE[index + 1 :])
         positions.append(index)
-        targets.append(float(TOKENS[mutant]))
+        targets.append(float(RESIDUE_TOKEN_IDS[mutant]))
 
     return training.VariantSplit(
         sequences=sequences,
@@ -147,6 +153,108 @@ def run(
     }
     kwargs.update(overrides)
     return training.train_lora(**kwargs)
+
+
+def ragged_split(count: int, seed: int) -> training.VariantSplit:
+    """Variants of differing lengths, for the readout that pools every residue.
+
+    The mean readout takes no positions, so the wild type's length stops being
+    fixed and a batch genuinely has to be padded. The target is the mean residue
+    id, which is what a correct pooling of this stub recovers up to the encoder's
+    own transform, so the task stays learnable.
+    """
+    rng = np.random.default_rng(seed)
+
+    sequences: list[str] = []
+    targets: list[float] = []
+    for _ in range(count):
+        length = int(rng.integers(4, len(WILDTYPE) + 1))
+        sequence = "".join(
+            AMINO_ACIDS[int(rng.integers(0, len(AMINO_ACIDS)))] for _ in range(length)
+        )
+        sequences.append(sequence)
+        targets.append(
+            float(np.mean([RESIDUE_TOKEN_IDS[residue] for residue in sequence]))
+        )
+
+    return training.VariantSplit(
+        sequences=sequences,
+        positions=None,
+        targets=np.asarray(targets, dtype=np.float32),
+        wildtype=None,
+    )
+
+
+# --- What the fixture itself can detect ----------------------------------------
+
+
+@pytest.mark.parametrize("position", [-1, len(WILDTYPE)])
+def test_the_encoder_stub_makes_a_special_token_read_loud(position: int) -> None:
+    """A guard on the guard: reading BOS or EOS must produce POISON, not a vector.
+
+    `validate_positions` rejects both of these positions before training sees
+    them, so this reaches `_encode_batch` directly to get past it. The point is
+    not that the readout is wrong, it is that this fixture can *tell*. Before
+    issue #14 it could not: an unpoisoned stub returns a plausible vector from a
+    padding slot, which is how the missing position guard survived PR #13's
+    review. If someone drops the poisoning, this fails.
+    """
+    encoder = tiny_bundle()
+
+    out = training._encode_batch(encoder, [WILDTYPE], [position], "at_position", None)
+
+    assert (out < POISON / 2).all()
+
+
+# --- The mean readout on the LoRA path -----------------------------------------
+
+
+def test_mean_readout_pools_exactly_the_residues() -> None:
+    """Hand-computed against the stub's own output, so the mask is pinned exactly.
+
+    Poisoning makes the failure unmissable rather than merely detectable: a mask
+    that covered BOS, EOS or a padding slot lands near POISON instead of a few
+    percent off.
+    """
+    import torch
+
+    encoder = tiny_bundle()
+    sequences = [WILDTYPE, WILDTYPE[:9]]
+
+    _, _, tokens = encoder.batch_converter(
+        [(str(index), sequence) for index, sequence in enumerate(sequences)]
+    )
+    with torch.no_grad():
+        representations = encoder.model(tokens, repr_layers=[encoder.repr_layer])[
+            "representations"
+        ][encoder.repr_layer]
+        expected = torch.stack(
+            [
+                representations[row, 1 : len(sequence) + 1].mean(dim=0)
+                for row, sequence in enumerate(sequences)
+            ]
+        )
+        out = training._encode_batch(encoder, sequences, None, "mean", None)
+
+    torch.testing.assert_close(out, expected)
+
+
+def test_mean_readout_trains_end_to_end_on_ragged_lengths() -> None:
+    """The only path exercising the `positions is None` branch of the batch loop."""
+    _, _, history = run(
+        max_epochs=8,
+        readout="mean",
+        train_data=ragged_split(24, seed=0),
+        val_data=ragged_split(8, seed=1),
+    )
+    assert history["readout"] == "mean"
+    assert history["train_loss"][-1] < history["train_loss"][0]
+
+
+def test_mean_readout_rejects_positions() -> None:
+    """Positions the readout cannot honour are an error, not something ignored."""
+    with pytest.raises(AssertionError, match="cannot honour"):
+        run(readout="mean", train_data=toy_split(24, seed=0))
 
 
 def test_lora_attaches_to_the_named_modules() -> None:
@@ -376,9 +484,6 @@ def test_the_seed_changes_the_batch_order() -> None:
 
 
 # --- Difference-at-position, the third pre-registered readout ------------------
-
-
-WILDTYPE = "MKTFFVLLLACDEFGHIKLM"
 
 
 def difference_split(count: int, seed: int) -> training.VariantSplit:
