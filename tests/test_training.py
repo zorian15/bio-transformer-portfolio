@@ -174,13 +174,15 @@ def test_train_stops_early_rather_than_running_every_epoch() -> None:
 # both loops now read the same one.
 
 
-def tracker_over(losses: list[float]) -> tuple[training._BestEpochTracker, list[int]]:
-    """Feed a fixed sequence of validation losses; return the tracker and its stops.
+def tracker_over(
+    losses: list[float],
+) -> tuple[training._BestEpochTracker[int], list[int]]:
+    """Feed a fixed sequence of validation losses.
 
-    The snapshot is the index of the epoch that took it, so a restore can be
-    checked by value rather than by identity.
+    Returns the tracker and the epochs its restore callback was handed, which is
+    empty until `finish` runs. The snapshot is the index of the epoch that took
+    it, so a restore can be checked by value rather than by identity.
     """
-    taken: list[int] = []
     restored: list[int] = []
     epoch = 0
 
@@ -189,7 +191,6 @@ def tracker_over(losses: list[float]) -> tuple[training._BestEpochTracker, list[
 
     tracker = training._BestEpochTracker(snapshot, restored.append)
     for epoch, loss in enumerate(losses):
-        taken.append(epoch)
         if tracker.update(loss):
             break
     return tracker, restored

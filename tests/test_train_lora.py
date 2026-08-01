@@ -10,6 +10,8 @@ model that trains, converges, and has adapted nothing.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 from typing import Any
 
 import numpy as np
@@ -188,8 +190,6 @@ def ragged_split(count: int, seed: int) -> training.VariantSplit:
 
 def test_lora_spec_is_frozen() -> None:
     """A SLURM array holds one of these per job; a mutated copy is a lost run."""
-    import dataclasses
-
     spec = training.LoraSpec(rank=4, alpha=8, target_modules=("q_proj",))
     with pytest.raises(dataclasses.FrozenInstanceError):
         spec.rank = 8  # type: ignore[misc]
@@ -221,6 +221,37 @@ def test_lora_spec_rejects_a_bare_string_of_target_modules() -> None:
     """
     with pytest.raises(AssertionError, match="tuple of module names"):
         training.LoraSpec(rank=4, alpha=8, target_modules="q_proj")  # type: ignore[arg-type]
+
+
+def test_lora_spec_survives_a_round_trip_through_json() -> None:
+    """The SLURM array's actual use: write the config out, read it back, re-check.
+
+    `as_history_block` widens target_modules to a list for JSON, which is exactly
+    what the constructor refuses, so the inverse has to be a real method rather
+    than `LoraSpec(**block)`. Without this test the array PR meets that
+    AssertionError under time pressure, and the obvious fix is to loosen the one
+    guard that catches a bare-string target_modules.
+    """
+    spec = training.LoraSpec(rank=8, alpha=16, target_modules=("q_proj", "v_proj"))
+
+    restored = training.LoraSpec.from_history_block(
+        json.loads(json.dumps(spec.as_history_block()))
+    )
+
+    assert restored == spec
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"rank": 8, "alpha": 16},
+        {"rank": 8, "alpha": 16, "target_modules": ["q_proj"], "dropout": 0.1},
+    ],
+)
+def test_lora_spec_rejects_a_block_with_the_wrong_keys(block: dict[str, Any]) -> None:
+    """A field silently dropped or ignored is a run configured other than it says."""
+    with pytest.raises(AssertionError, match="expected keys"):
+        training.LoraSpec.from_history_block(block)
 
 
 def test_history_records_the_adapter_config_as_one_block() -> None:

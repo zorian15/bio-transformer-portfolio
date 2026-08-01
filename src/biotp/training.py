@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Any, Generic, Literal, TypeVar
 
 import numpy as np
 
@@ -48,7 +48,7 @@ def _clone_state(state: dict[str, Any]) -> dict[str, Any]:
     return {key: value.detach().clone() for key, value in state.items()}
 
 
-def _initial_history(mode: str, n_train: int, n_val: int) -> dict[str, Any]:
+def _initial_history(mode: FinetuneMode, n_train: int, n_val: int) -> dict[str, Any]:
     """The history fields every training function reports, whatever it trained.
 
     Shared so a caller reading a manifest finds the same five keys under the same
@@ -63,7 +63,13 @@ def _initial_history(mode: str, n_train: int, n_val: int) -> dict[str, Any]:
     }
 
 
-class _BestEpochTracker:
+# What a snapshot holds. Generic rather than Any so the pair of callbacks is
+# checked against each other: a restore that cannot accept what its own snapshot
+# produces is caught at the call site rather than at the end of a long run.
+Snapshot = TypeVar("Snapshot")
+
+
+class _BestEpochTracker(Generic[Snapshot]):
     """Best-epoch selection, the early-stopping rule, and the restore afterwards.
 
     Both rungs of the DMS ladder run their loop through one of these. That is the
@@ -88,7 +94,7 @@ class _BestEpochTracker:
     """
 
     def __init__(
-        self, snapshot: Callable[[], Any], restore: Callable[[Any], None]
+        self, snapshot: Callable[[], Snapshot], restore: Callable[[Snapshot], None]
     ) -> None:
         self._snapshot = snapshot
         self._restore = restore
@@ -99,7 +105,10 @@ class _BestEpochTracker:
         # and then fail loudly in `finish`, not burn every epoch first.
         self.best_epoch = -1
         self.epochs_seen = 0
-        self._best_state: Any | None = None
+        # Any rather than `Snapshot | None`, because a snapshot callback is
+        # entitled to return None and this attribute must not be the thing that
+        # decides whether an epoch improved. `best_epoch` is that thing.
+        self._best_state: Any = None
 
     def update(self, val_loss: float) -> bool:
         """Record one epoch's validation loss; return True when training should stop.
@@ -125,7 +134,7 @@ class _BestEpochTracker:
         loop that appended in the wrong place would otherwise report a best epoch
         indexing a different list than the one it names.
         """
-        assert self._best_state is not None, "training completed without a best epoch"
+        assert self.best_epoch >= 0, "training completed without a best epoch"
         assert len(history["val_loss"]) == self.epochs_seen, (
             f"history recorded {len(history['val_loss'])} validation losses but "
             f"{self.epochs_seen} epochs ran; best_epoch indexes that list"
@@ -283,7 +292,8 @@ def train(
         history["train_loss"].append(epoch_loss / len(x_train))
         history["val_loss"].append(val_loss)
 
-        if tracker.update(val_loss):
+        should_stop = tracker.update(val_loss)
+        if should_stop:
             break
 
     tracker.finish(history)
@@ -406,13 +416,38 @@ class LoraSpec:
         """This config as one JSON-safe block, for a history dict or a manifest.
 
         `target_modules` becomes a list rather than a tuple so a manifest written
-        and then read back compares equal to the one that produced it.
+        and then read back compares equal to the one that produced it. Read it
+        back with `from_history_block`, not `LoraSpec(**block)`: a list is
+        exactly what `__post_init__` refuses, and that guard is the one thing
+        standing between `target_modules="q_proj"` and six single-character
+        names reaching peft.
         """
         return {
             "rank": self.rank,
             "alpha": self.alpha,
             "target_modules": list(self.target_modules),
         }
+
+    @classmethod
+    def from_history_block(cls, block: dict[str, Any]) -> LoraSpec:
+        """Rebuild a spec from `as_history_block`, after a trip through JSON.
+
+        The inverse the SLURM array needs: a job reads its configuration out of
+        a manifest or a job spec, and gets back an object that has re-run every
+        check rather than a dict nobody validated.
+
+        The key set is checked rather than ignored, so a block that gained or
+        lost a field fails here instead of silently dropping it.
+        """
+        expected = {"rank", "alpha", "target_modules"}
+        assert (
+            set(block) == expected
+        ), f"expected keys {sorted(expected)}, got {sorted(block)}"
+        return cls(
+            rank=block["rank"],
+            alpha=block["alpha"],
+            target_modules=tuple(block["target_modules"]),
+        )
 
 
 def _check_split(
@@ -729,7 +764,8 @@ def train_lora(
         val_loss = evaluate(val_data)
         history["val_loss"].append(val_loss)
 
-        if tracker.update(val_loss):
+        should_stop = tracker.update(val_loss)
+        if should_stop:
             break
 
     tracker.finish(history)
