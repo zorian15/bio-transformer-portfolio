@@ -77,6 +77,10 @@ ZERO_SHOT_CHECKPOINTS = ("esm2_t12_35M_UR50D", "esm2_t33_650M_UR50D")
 
 SCHEMES = ("fold_random_5", "fold_modulo_5", "fold_contiguous_5")
 
+# The three rungs of the ladder, named once so argparse and the manifest agree
+# on the set and a fourth rung cannot be added to one without the other.
+RUNGS = ("zero_shot", "frozen", "lora")
+
 # Fold 0 tests, fold 1 selects, folds 2-4 supply training data. Fixed rather than
 # rotated: see the module docstring.
 TEST_FOLD = 0
@@ -487,11 +491,31 @@ def grid(rung: str, assays: tuple[str, ...]) -> Iterator[Config]:
                         )
 
 
+def configuration_records(rung: str) -> dict[str, Any]:
+    """The manifest entries describing how this rung was configured.
+
+    Only rung 3 has configuration that argv does not already carry: the adapter
+    hyperparameters are a module constant, so `vars(args)` records nothing about
+    them and a manifest would otherwise describe a fine-tuning run without
+    saying what was adapted. The commit hash would be the only trace, which is
+    archaeology at best and useless from a dirty tree.
+
+    A separate function rather than an inline `run.record`, so the rung-to-
+    records mapping is testable without a pipeline run. Nothing else in this
+    script is, which is how the gap this closes went unnoticed.
+    """
+    assert rung in RUNGS, f"unknown rung {rung!r}; expected one of {sorted(RUNGS)}"
+    if rung != "lora":
+        return {}
+    # One nested block rather than three loose keys, matching the shape
+    # train_lora reports in its history. Read it back with
+    # LoraSpec.from_history_block.
+    return {"lora": LORA_SPEC.as_history_block()}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--rung", required=True, choices=["zero_shot", "frozen", "lora"]
-    )
+    parser.add_argument("--rung", required=True, choices=list(RUNGS))
     parser.add_argument(
         "--all", action="store_true", help="loop the whole rung locally"
     )
@@ -515,13 +539,8 @@ def main() -> int:
             run.record("assays", list(assays))
             run.record("variants", len(table))
 
-        if args.rung == "lora":
-            # The adapter configuration is not reachable from argv, so without
-            # this the manifest describes a rung-3 run without saying what was
-            # adapted, and the only record of rank and alpha is the commit hash.
-            # One nested block rather than three loose keys, matching the shape
-            # train_lora reports in its history.
-            run.record("lora", LORA_SPEC.as_history_block())
+        for key, value in configuration_records(args.rung).items():
+            run.record(key, value)
 
         if args.all:
             configs = list(grid(args.rung, assays))
