@@ -4,7 +4,7 @@ This is the source-of-truth plan for this repo. Each project lives under `projec
 
 Goal: build practical, openly-released transformer experiments at the intersection of machine learning and biology, drawing on a background in viral-protein and adaptive-immunity modeling. Each project ends in a public repo, model weights, and a short writeup, with an emphasis on careful, leakage-aware evaluation and reproducibility.
 
-Order: **build in numbered order**, Project 1, then Project 2, then Project 3. The numbers are assigned to match the build order, so "Project 1" always means "the one to do first." Rationale for that order: Project 1's honest baseline is the sequence-only protein-LM pipeline, which is also the core of Project 2, so Project 1 delivers most of Project 2 as a byproduct. Project 3 then reuses the same fine-tuning and evaluation harness on immune data.
+Order: **build in numbered order**, Project 1, then Project 2, then Project 3. The numbers are assigned to match the build order, so "Project 1" always means "the one to do first." Rationale for that order: Project 1's honest baseline is the sequence-only protein-LM pipeline, which is also the core of Project 2, so Project 1 delivers most of Project 2 as a byproduct. Project 3 then reuses the same fine-tuning and evaluation harness on multi-mutant DMS data.
 
 Guiding principle: MVP first. Get an end-to-end result with frozen embeddings and a small head before adding fine-tuning, fusion, or scale. Ramp complexity only after something runs end to end.
 
@@ -33,7 +33,7 @@ Lives in `src/biotp/`.
 - ESM-2 embedding extraction (`embeddings.py`): load a small ESM-2 checkpoint (e.g. 35M or 150M), produce per-sequence embeddings, cache to disk. Frozen embeddings keep everything cheap.
 - Fine-tuning harness (`training.py`): swap between linear probe, LoRA, and full fine-tune behind one interface.
 - Evaluation harness with leakage-aware splits (`evaluation.py`): held-out entities (proteins / families / epitopes / donors), not random rows. Leakage-aware splits are the methodological backbone of these experiments, so make them a first-class feature.
-- Leakage ablation for annotation text (`text_ablation.py`): strip database bookkeeping from curated prose, split it into sentences, drop the sentences stating the label according to a caller-supplied vocabulary, and report how much was removed. Leakage-aware splits handle a leak *across* the split; this handles a leak *inside* the input. The vocabulary stays with the project that owns the task: subcellular compartments for Project 1, epitope names for Project 3.
+- Leakage ablation for annotation text (`text_ablation.py`): strip database bookkeeping from curated prose, split it into sentences, drop the sentences stating the label according to a caller-supplied vocabulary, and report how much was removed. Leakage-aware splits handle a leak *across* the split; this handles a leak *inside* the input. The vocabulary stays with the project that owns the task: subcellular compartments for Project 1. Project 3 no longer has a text arm, so nothing there uses it.
 - Release template (`release.py`): repo layout, environment lockfile, model card, weights pushed to the Hugging Face Hub, reproducible run scripts.
 
 ---
@@ -62,15 +62,24 @@ Lives in `projects/dms-benchmark/`. Extends Project 1's sequence pipeline into a
 - **Deliverable:** repo + writeup with the benchmark and the crossover point where scale overtakes structure.
 - **Skills exercised:** PLM fine-tuning (LoRA), zero-shot scoring, benchmarking.
 
-## Project 3 (third): TCR / antibody LM for specificity or escape
-Lives in `projects/tcr-antibody-lm/`. Points the same machinery at adaptive-immunity data, an area of domain depth.
+## Project 3 (third): Epistasis, or what a protein LM structurally cannot see
+Lives in `projects/epistasis-plm-torchdms/`. Points the Project 2 machinery at multi-mutant SARS-CoV-2 RBD data and compares it against `torchdms`, a DMS model written by this repo's author.
 
-- **Question:** Can a fine-tuned protein LM predict TCR-epitope specificity (or antibody escape) better than a simple baseline, and does it generalize to unseen epitopes?
-- **Data:** VDJdb / IEDB for TCR-epitope pairs, or an antibody escape / DMS dataset from polyclonal studies.
-- **Model:** ESM-2 or a TCR-specific transformer fine-tuned for the task; baseline = k-mer or simple classifier.
-- **Eval:** the hard and honest split is held-out epitopes (no epitope shared between train and test), which exposes the memorization-vs-generalization gap that naive splits hide. Guarding against leakage is the whole point here.
+- **Question:** Deep mutational scanning of combinations is where epistasis lives. Can a protein LM capture it, and how does it compare to a model built for the job?
+- **The observation the project is built on:** masked-marginal scoring is **additive over sites by construction**. Each term masks one position of the *wild-type* sequence, so nothing in the sum ever sees the other mutation, and the score of a double mutant is identically the sum of its singles. Verified on real data at exactly 0.00e+00 deviation. This is not an empirical weakness to be measured; it is a property of the scoring rule. The standard way people use protein LMs zero-shot cannot represent epistasis at all.
+- **Data:** Starr/Bloom SARS-CoV-2 RBD DMS, the barcoded libraries carrying variable numbers of mutations. ProteinGym ships only the single-mutant summary (`SPIKE_SARS2_Starr_2020_binding` and `_expression`, `includes_multiple_mutants` false), so the multi-mutant data comes from the Bloom lab release upstream of it.
+- **Arms:**
+  - PLM zero-shot masked-marginals: provably additive, the null.
+  - PLM embeddings of the full mutant sequence + head: the embedding of a double is not the sum of the singles' embeddings, so this *can* express epistasis. Whether it does is the open question.
+  - `torchdms` additive: an explicit additive model fit to the data, which separates "additive because the biology is" from "additive because the model cannot do otherwise."
+  - `torchdms` with a latent nonlinearity: global epistasis, the thing the tool was built for.
+- **Eval:** train on singles, test on multiples. Held-out mutational *combinations*, leakage-aware by construction, and the question the field actually asks.
 - **Deliverable:** repo + weights + writeup.
-- **Skills exercised:** transformer fine-tuning on immune-repertoire data, with leakage-aware generalization testing.
+- **Skills exercised:** fine-tuning, leakage-aware generalization, and a comparison against a purpose-built structured model rather than a strawman.
+- **Known constraint:** `torchdms` pins `python_requires=">=3.8,<3.10"` and hard-pins `pandas==1.4.2`, so it cannot live in the Python 3.11 `biollm` env. It ships a `tdms` console entry point, so it runs in its own environment behind a subprocess boundary rather than as an import.
+
+### Deferred: TCR / antibody LM for specificity or escape
+The original Project 3, kept here because the reasoning should outlive the decision. It asked whether a fine-tuned protein LM predicts TCR-epitope specificity better than a simple baseline, on VDJdb / IEDB, split on held-out epitopes. It was replaced because the epistasis project exercises the same skills (fine-tuning, leakage-aware splits, viral protein data) with far more domain depth, and compares against a tool this repo's author wrote rather than a strawman. Worth returning to; nothing about it was wrong.
 
 ---
 
@@ -78,7 +87,7 @@ Lives in `projects/tcr-antibody-lm/`. Points the same machinery at adaptive-immu
 1. Shared infra + Project 1 MVP (frozen embeddings, sequence-only vs sequence+text): the biggest single step, since it stands up the whole stack. Get a number end to end before adding contrastive/fine-tuning.
 2. Project 1 full (controls, contrastive, writeup, release).
 3. Project 2: reuse the sequence pipeline, add zero-shot + LoRA + the data-efficiency curve. Smaller increment.
-4. Project 3: swap in immune data, add leakage-aware epitope split. Domain reuse.
+4. Project 3: swap in multi-mutant RBD data, add the singles-to-multiples split, and wire `torchdms` in behind a subprocess boundary. Domain reuse, plus a comparison against a purpose-built structured model.
 
 ## Open-science release checklist (per project)
 - Public repo with README, reproducible run scripts, environment lockfile.

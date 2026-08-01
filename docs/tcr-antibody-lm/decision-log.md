@@ -1,1 +1,0 @@
-../../projects/tcr-antibody-lm/DECISION_LOG.md
