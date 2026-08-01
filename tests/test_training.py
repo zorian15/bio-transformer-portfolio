@@ -164,6 +164,100 @@ def test_train_stops_early_rather_than_running_every_epoch() -> None:
     assert history["epochs_run"] < 500
 
 
+# --- The scaffolding both rungs share ------------------------------------------
+#
+# `train` and `train_lora` used to carry their own copy of the best-epoch
+# bookkeeping and the stopping rule. They are rungs 2 and 3 of a ladder whose
+# whole purpose is that they differ in exactly one respect, so a stopping rule
+# changed in one and not the other would move the measured delta while every
+# test still passed. These tests pin the shared implementation directly, since
+# both loops now read the same one.
+
+
+def tracker_over(losses: list[float]) -> tuple[training._BestEpochTracker, list[int]]:
+    """Feed a fixed sequence of validation losses; return the tracker and its stops.
+
+    The snapshot is the index of the epoch that took it, so a restore can be
+    checked by value rather than by identity.
+    """
+    taken: list[int] = []
+    restored: list[int] = []
+    epoch = 0
+
+    def snapshot() -> int:
+        return epoch
+
+    tracker = training._BestEpochTracker(snapshot, restored.append)
+    for epoch, loss in enumerate(losses):
+        taken.append(epoch)
+        if tracker.update(loss):
+            break
+    return tracker, restored
+
+
+def test_tracker_indexes_epochs_from_zero() -> None:
+    """best_epoch is an index into val_loss, which both call sites' tests assume."""
+    tracker, _ = tracker_over([0.5])
+    assert tracker.best_epoch == 0
+
+
+def test_tracker_keeps_the_first_of_tied_minima() -> None:
+    """A tie must not advance the best epoch.
+
+    Both call sites' tests locate the best epoch with a first-minimum rule
+    (`list.index(min(...))` and `np.argmin`), so the improvement test has to stay
+    strictly less-than. A `<=` would pass here only by moving those.
+    """
+    tracker, _ = tracker_over([1.0, 0.5, 0.5, 0.5])
+    assert tracker.best_epoch == 1
+    assert tracker.best_val == 0.5
+
+
+def test_tracker_stops_exactly_at_the_patience_boundary() -> None:
+    """One epoch earlier or later is a silent change to every reported result."""
+    patience = training.EARLY_STOPPING_PATIENCE
+    tracker, _ = tracker_over([1.0] + [2.0] * (patience + 5))
+
+    assert tracker.best_epoch == 0
+    assert tracker.epochs_seen == patience + 1
+
+
+def test_tracker_restores_the_snapshot_from_the_best_epoch() -> None:
+    """Not the last snapshot taken, and not one taken at a worse epoch."""
+    tracker, restored = tracker_over([1.0, 0.5, 0.9])
+    history: dict[str, object] = {"val_loss": [1.0, 0.5, 0.9]}
+
+    tracker.finish(history)
+
+    assert restored == [1]
+    assert history["best_epoch"] == 1
+    assert history["best_val_loss"] == 0.5
+    assert history["epochs_run"] == 3
+
+
+def test_tracker_finish_rejects_a_run_with_no_best_epoch() -> None:
+    """A NaN validation loss never improves, so there is nothing to restore.
+
+    `nan < inf` is False, so the patience branch is reachable from the initial
+    sentinel and the run ends without a snapshot. Failing here is the point: the
+    alternative is reporting whatever weights the last epoch happened to leave.
+    """
+    tracker, _ = tracker_over([float("nan")] * 40)
+    with pytest.raises(AssertionError, match="without a best epoch"):
+        tracker.finish({"val_loss": [float("nan")] * tracker.epochs_seen})
+
+
+def test_tracker_finish_rejects_a_history_that_lost_an_epoch() -> None:
+    """The tracker and the loop are two owners of the same epoch count.
+
+    They cannot be merged without giving the tracker the loss lists too, so the
+    coupling is made loud instead of left implicit.
+    """
+    tracker, _ = tracker_over([1.0, 0.5])
+    with pytest.raises(AssertionError, match="recorded 1 validation losses"):
+        tracker.finish({"val_loss": [1.0]})
+
+
 def test_train_is_deterministic_for_a_fixed_seed() -> None:
     train_data, val_data, test_data = classification_split()
 

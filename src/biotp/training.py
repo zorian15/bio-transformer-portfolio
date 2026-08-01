@@ -15,6 +15,7 @@ only in whether the encoder was allowed to adapt.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -38,7 +39,106 @@ BATCH_SIZE = 256
 
 # Stop when validation loss has not improved for this many epochs. Best weights
 # are restored afterwards, so a generous max_epochs costs time, not quality.
+# Read only by _BestEpochTracker, which is what keeps the two rungs on one rule.
 EARLY_STOPPING_PATIENCE = 10
+
+
+def _clone_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Detach and copy a state dict, so later steps cannot move a saved snapshot."""
+    return {key: value.detach().clone() for key, value in state.items()}
+
+
+def _initial_history(mode: str, n_train: int, n_val: int) -> dict[str, Any]:
+    """The history fields every training function reports, whatever it trained.
+
+    Shared so a caller reading a manifest finds the same five keys under the same
+    names regardless of which rung produced it. Each function adds its own on top.
+    """
+    return {
+        "train_loss": [],
+        "val_loss": [],
+        "n_train": n_train,
+        "n_val": n_val,
+        "mode": mode,
+    }
+
+
+class _BestEpochTracker:
+    """Best-epoch selection, the early-stopping rule, and the restore afterwards.
+
+    Both rungs of the DMS ladder run their loop through one of these. That is the
+    point of the class rather than a nicety: `train` and `train_lora` differ in
+    exactly one respect by design, and a stopping rule or an improvement test
+    changed in one and not the other would move the measured rung-2-to-rung-3
+    delta while every test still passed and every number still looked reasonable.
+
+    Patience is read from EARLY_STOPPING_PATIENCE here rather than taken as an
+    argument, so the two call sites cannot pass different values.
+
+    The epoch index is counted here rather than supplied, so `best_epoch` is by
+    construction an index into the validation losses this object was handed, and
+    cannot drift from the caller's own loop variable.
+
+    Args:
+        snapshot: called on each improving epoch; returns whatever should be
+            restored later. The only real difference between the two call sites:
+            the frozen rung checkpoints one state dict, the LoRA rung checkpoints
+            the adapters and the head as a pair.
+        restore: called once by `finish`, with the best epoch's snapshot.
+    """
+
+    def __init__(
+        self, snapshot: Callable[[], Any], restore: Callable[[Any], None]
+    ) -> None:
+        self._snapshot = snapshot
+        self._restore = restore
+        self.best_val = float("inf")
+        # Deliberately -1 rather than None, so the patience arithmetic below is
+        # reachable before any improvement. A NaN validation loss never improves
+        # on the initial infinity, and that run should stop after patience epochs
+        # and then fail loudly in `finish`, not burn every epoch first.
+        self.best_epoch = -1
+        self.epochs_seen = 0
+        self._best_state: Any | None = None
+
+    def update(self, val_loss: float) -> bool:
+        """Record one epoch's validation loss; return True when training should stop.
+
+        Strictly less-than, so a tie leaves the best epoch at the first minimum.
+        Both call sites' tests locate that epoch with a first-minimum rule.
+        """
+        epoch = self.epochs_seen
+        self.epochs_seen += 1
+
+        if val_loss < self.best_val:
+            self.best_val = val_loss
+            self.best_epoch = epoch
+            self._best_state = self._snapshot()
+            return False
+        return epoch - self.best_epoch >= EARLY_STOPPING_PATIENCE
+
+    def finish(self, history: dict[str, Any]) -> None:
+        """Restore the best epoch's weights and write the three keys both rungs report.
+
+        The consistency assertions cover the one coupling this seam leaves open:
+        the loop owns the loss lists and this object owns the epoch count, so a
+        loop that appended in the wrong place would otherwise report a best epoch
+        indexing a different list than the one it names.
+        """
+        assert self._best_state is not None, "training completed without a best epoch"
+        assert len(history["val_loss"]) == self.epochs_seen, (
+            f"history recorded {len(history['val_loss'])} validation losses but "
+            f"{self.epochs_seen} epochs ran; best_epoch indexes that list"
+        )
+        assert history["val_loss"][self.best_epoch] == self.best_val, (
+            f"best_val_loss {self.best_val} is not history['val_loss']"
+            f"[{self.best_epoch}]; the loop and the tracker saw different losses"
+        )
+
+        self._restore(self._best_state)
+        history["best_epoch"] = self.best_epoch
+        history["best_val_loss"] = self.best_val
+        history["epochs_run"] = self.epochs_seen
 
 
 def build_head(input_dim: int, output_dim: int, task: Task) -> Any:
@@ -157,18 +257,13 @@ def train(
     loss_fn = nn.CrossEntropyLoss() if task == "classification" else nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    history: dict[str, Any] = {
-        "train_loss": [],
-        "val_loss": [],
-        "n_train": len(x_train),
-        "n_val": len(x_val),
-        "mode": mode,
-    }
-    best_val = float("inf")
-    best_epoch = -1
-    best_state: dict[str, Any] | None = None
+    history = _initial_history(mode, len(x_train), len(x_val))
+    tracker = _BestEpochTracker(
+        lambda: _clone_state(model.state_dict()),
+        model.load_state_dict,
+    )
 
-    for epoch in range(max_epochs):
+    for _ in range(max_epochs):
         model.train()
         permutation = torch.randperm(len(x_train), device=device)
         epoch_loss = 0.0
@@ -188,21 +283,10 @@ def train(
         history["train_loss"].append(epoch_loss / len(x_train))
         history["val_loss"].append(val_loss)
 
-        if val_loss < best_val:
-            best_val = val_loss
-            best_epoch = epoch
-            best_state = {
-                key: value.detach().clone() for key, value in model.state_dict().items()
-            }
-        elif epoch - best_epoch >= EARLY_STOPPING_PATIENCE:
+        if tracker.update(val_loss):
             break
 
-    assert best_state is not None, "training completed without a best epoch"
-    model.load_state_dict(best_state)
-
-    history["best_epoch"] = best_epoch
-    history["best_val_loss"] = best_val
-    history["epochs_run"] = len(history["val_loss"])
+    tracker.finish(history)
     return model, history
 
 
@@ -501,29 +585,45 @@ def train_lora(
         lr=lr,
     )
 
-    history: dict[str, Any] = {
-        "train_loss": [],
-        "val_loss": [],
-        "n_train": len(train_data.sequences),
-        "n_val": len(val_data.sequences),
-        "mode": "lora",
-        "readout": readout,
-        "lora_rank": lora_rank,
-        "lora_alpha": lora_alpha,
-        "target_modules": list(target_modules),
-        "seed": seed,
-        "encoder_parameters": encoder_parameters,
-        "trainable_encoder_parameters": trainable_encoder_parameters,
-        # Tensors, not modules: peft adds two per adapted module (lora_A and
-        # lora_B). Named for what it counts, because this lands in a run manifest
-        # where the name is all a later reader has.
-        "lora_parameter_tensors": sum(
-            1 for name, _ in encoder.model.named_parameters() if "lora_" in name
-        ),
-    }
-    best_val = float("inf")
-    best_epoch = -1
-    best_state: tuple[dict, dict] | None = None
+    history = _initial_history(
+        "lora", len(train_data.sequences), len(val_data.sequences)
+    )
+    history.update(
+        {
+            "readout": readout,
+            "lora_rank": lora_rank,
+            "lora_alpha": lora_alpha,
+            "target_modules": list(target_modules),
+            "seed": seed,
+            "encoder_parameters": encoder_parameters,
+            "trainable_encoder_parameters": trainable_encoder_parameters,
+            # Tensors, not modules: peft adds two per adapted module (lora_A and
+            # lora_B). Named for what it counts, because this lands in a run
+            # manifest where the name is all a later reader has.
+            "lora_parameter_tensors": sum(
+                1 for name, _ in encoder.model.named_parameters() if "lora_" in name
+            ),
+        }
+    )
+
+    def snapshot() -> tuple[dict, dict]:
+        """Adapters and head, not the whole encoder.
+
+        The base is frozen, so it cannot differ between epochs, and cloning it
+        would allocate a full copy on-device every time validation improved:
+        about 140 MB at 35M and 2.6 GB at 650M, to preserve well under a
+        megabyte of adapters.
+        """
+        return (
+            _clone_state(get_peft_model_state_dict(encoder.model)),
+            _clone_state(head.state_dict()),
+        )
+
+    def restore(state: tuple[dict, dict]) -> None:
+        set_peft_model_state_dict(encoder.model, state[0])
+        head.load_state_dict(state[1])
+
+    tracker = _BestEpochTracker(snapshot, restore)
 
     def evaluate(split: VariantSplit) -> float:
         """Mean squared error over a split, through the same path scoring uses.
@@ -573,33 +673,10 @@ def train_lora(
         val_loss = evaluate(val_data)
         history["val_loss"].append(val_loss)
 
-        if val_loss < best_val:
-            best_val = val_loss
-            best_epoch = epoch
-            # Adapters only, not the whole encoder. The base is frozen, so it
-            # cannot differ between epochs, and cloning it would allocate a full
-            # copy on-device every time validation improved: about 140 MB at 35M
-            # and 2.6 GB at 650M, to preserve well under a megabyte of adapters.
-            best_state = (
-                {
-                    key: value.detach().clone()
-                    for key, value in get_peft_model_state_dict(encoder.model).items()
-                },
-                {
-                    key: value.detach().clone()
-                    for key, value in head.state_dict().items()
-                },
-            )
-        elif epoch - best_epoch >= EARLY_STOPPING_PATIENCE:
+        if tracker.update(val_loss):
             break
 
-    assert best_state is not None, "training completed without a best epoch"
-    set_peft_model_state_dict(encoder.model, best_state[0])
-    head.load_state_dict(best_state[1])
-
-    history["best_epoch"] = best_epoch
-    history["best_val_loss"] = best_val
-    history["epochs_run"] = len(history["val_loss"])
+    tracker.finish(history)
     return encoder, head, history
 
 
