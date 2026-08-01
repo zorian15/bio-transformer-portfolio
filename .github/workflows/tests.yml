@@ -61,9 +61,21 @@ jobs:
       # mypy runs inside the full env on purpose. With ignore_missing_imports and
       # numpy or torch absent, it silently checks less and would pass here while
       # failing locally.
+      # Each project's scripts directory is checked separately. Every project
+      # follows the same script naming by convention, so `projects/*/scripts` holds
+      # several files called prepare_data.py, and mypy maps all of them to one
+      # module named `prepare_data` and refuses to check any of them. The
+      # directory names contain hyphens, so --explicit-package-bases cannot build
+      # distinct module paths either. Looping keeps every script checked and
+      # extends to a new project without editing this file.
       - name: Type check
         shell: bash -el {0}
-        run: mypy src projects tests
+        run: |
+          mypy src tests
+          for scripts in projects/*/scripts; do
+            echo "mypy $scripts"
+            mypy "$scripts"
+          done
 
       # The default suite, which deselects network tests. Those run in
       # embedding-anchor.yml, where the checkpoint download is cached.

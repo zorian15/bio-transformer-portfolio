@@ -10,7 +10,7 @@ Numbering matches build order, so Project 1 is the one to build first. That orde
 
 1. **[grounding-multimodal](projects/grounding-multimodal/)** (flagship, first) — does grounding a protein-sequence representation in text (functional annotations) beat sequence-only, once controls rule out label leakage? A protein-domain take on the broader "does language grounding help" question. [Decisions](projects/grounding-multimodal/DECISION_LOG.md)
 2. **[dms-benchmark](projects/dms-benchmark/)** — when does a fine-tuned protein language model beat a simple structured baseline on deep mutational scanning fitness, and how does that change with the amount of labeled data? [Decisions](projects/dms-benchmark/DECISION_LOG.md)
-3. **[tcr-antibody-lm](projects/tcr-antibody-lm/)** — can a fine-tuned protein LM predict TCR-epitope specificity (or antibody escape), and does it generalize to unseen epitopes? [Decisions](projects/tcr-antibody-lm/DECISION_LOG.md)
+3. **[epistasis-plm-torchdms](projects/epistasis-plm-torchdms/)** — masked-marginal scoring is additive over sites by construction, so a protein LM used zero-shot cannot represent epistasis at all. Can a supervised one, and how does it compare to `torchdms`? [Decisions](projects/epistasis-plm-torchdms/DECISION_LOG.md)
 
 ## Layout
 

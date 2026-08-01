@@ -1,4 +1,4 @@
-# Decision Log: tcr-antibody-lm
+# Decision Log: epistasis-plm-torchdms
 
 Chronological record of experiments and the decisions they drove. Newest entries on top. One entry per meaningful run or decision. This log is the raw material for the eventual writeup.
 

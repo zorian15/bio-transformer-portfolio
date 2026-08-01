@@ -33,7 +33,7 @@ record what actually happened, including the wrong turns.
 |---|---|---|
 | 1. grounding-multimodal | Introduction, Data, Method, Ablation filter, Results | [Log](grounding-multimodal/decision-log.md) |
 | 2. dms-benchmark | Not started | [Log](dms-benchmark/decision-log.md) |
-| 3. tcr-antibody-lm | Not started | [Log](tcr-antibody-lm/decision-log.md) |
+| 3. epistasis-plm-torchdms | Not started | [Log](epistasis-plm-torchdms/decision-log.md) |
 
 Build order follows the project numbering, and Projects 2 and 3 have not begun,
 so their logs currently hold only the entry template. Scope and sequencing live

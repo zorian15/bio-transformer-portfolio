@@ -3,7 +3,7 @@
 Read `PLANNING.md` first; it is the source of truth for scope and sequencing.
 
 ## What this repo is
-Three small, openly-released transformer-and-biology experiments (see `PLANNING.md`). Build order matches the project numbering: `grounding-multimodal` (Project 1) first, then `dms-benchmark` (Project 2), then `tcr-antibody-lm` (Project 3). They share the `biotp` package in `src/`.
+Three small, openly-released transformer-and-biology experiments (see `PLANNING.md`). Build order matches the project numbering: `grounding-multimodal` (Project 1) first, then `dms-benchmark` (Project 2), then `epistasis-plm-torchdms` (Project 3). They share the `biotp` package in `src/`.
 
 ## Environment
 - Use **mamba**, not venv. The env is named **`biollm`**.

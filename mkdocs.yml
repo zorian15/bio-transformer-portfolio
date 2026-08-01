@@ -81,7 +81,9 @@ nav:
       - Results: grounding-multimodal/results.md
       - Experiment log: grounding-multimodal/decision-log.md
   - "Project 2: dms-benchmark":
+      - Method: dms-benchmark/method.md
+      - Results: dms-benchmark/results.md
       - Experiment log: dms-benchmark/decision-log.md
-  - "Project 3: tcr-antibody-lm":
-      - Experiment log: tcr-antibody-lm/decision-log.md
+  - "Project 3: epistasis-plm-torchdms":
+      - Experiment log: epistasis-plm-torchdms/decision-log.md
   - Appendix: appendix.md

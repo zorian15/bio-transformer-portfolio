@@ -526,28 +526,16 @@ def train_lora(
     best_state: tuple[dict, dict] | None = None
 
     def evaluate(split: VariantSplit) -> float:
-        """Mean loss over a split, with dropout off and gradients detached."""
-        encoder.model.eval()
-        head.eval()
-        total = 0.0
-        with torch.no_grad():
-            for start in range(0, len(split.sequences), batch_size):
-                stop = start + batch_size
-                positions = (
-                    None if split.positions is None else split.positions[start:stop]
-                )
-                features = _encode_batch(
-                    encoder,
-                    split.sequences[start:stop],
-                    positions,
-                    readout,
-                    split.wildtype,
-                )
-                targets = torch.as_tensor(
-                    split.targets[start:stop], dtype=torch.float32, device=device
-                ).reshape(-1, 1)
-                total += float(loss_fn(head(features), targets)) * len(targets)
-        return total / len(split.sequences)
+        """Mean squared error over a split, through the same path scoring uses.
+
+        Routed via `predict_lora` rather than reimplementing the batching, so
+        model selection during training and the predictions reported afterwards
+        cannot diverge. A validation loss computed one way and a Spearman
+        computed another is a difference that never shows up as a failure.
+        """
+        predictions = predict_lora(encoder, head, split, readout, batch_size)
+        residuals = predictions - np.asarray(split.targets, dtype=np.float64)
+        return float(np.mean(residuals**2))
 
     for epoch in range(max_epochs):
         encoder.model.train()
@@ -613,3 +601,67 @@ def train_lora(
     history["best_val_loss"] = best_val
     history["epochs_run"] = len(history["val_loss"])
     return encoder, head, history
+
+
+def predict_lora(
+    encoder: Any,
+    head: Any,
+    split: VariantSplit,
+    readout: LoraReadout,
+    batch_size: int,
+) -> np.ndarray:
+    """Return one scalar prediction per variant from an adapted encoder and head.
+
+    The fine-tuned counterpart to `predict`, which takes precomputed features and
+    so cannot serve a rung whose encoder is part of the model. Kept separate from
+    `train_lora` for the same reason `predict` is separate from `train`:
+    evaluation must not be able to run with dropout active or gradients enabled,
+    and the only reliable way to guarantee that is for it to live somewhere that
+    never trains.
+
+    Args:
+        encoder: an Esm2Bundle whose model carries LoRA adapters, as returned by
+            train_lora.
+        head: the fitted regression head returned alongside it.
+        split: the variants to score. `targets` is ignored and may hold anything;
+            only the sequences, positions and wild type are read.
+        readout: must match the one the model was trained under. A model fitted
+            on one readout and scored under another produces finite, plausible,
+            meaningless numbers.
+        batch_size: sequences per forward pass.
+
+    Returns:
+        Array of shape (len(split.sequences),), in the split's own order.
+    """
+    import torch
+
+    assert split.sequences, "predict_lora received an empty split"
+    assert batch_size > 0, f"batch_size must be positive, got {batch_size}"
+    assert (
+        readout in LORA_READOUTS
+    ), f"unknown readout {readout!r}; expected one of {sorted(LORA_READOUTS)}"
+    _check_split(split, readout, encoder.max_sequence_length, "predict")
+
+    encoder.model.eval()
+    head.eval()
+
+    outputs: list[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, len(split.sequences), batch_size):
+            stop = start + batch_size
+            positions = None if split.positions is None else split.positions[start:stop]
+            features = _encode_batch(
+                encoder,
+                split.sequences[start:stop],
+                positions,
+                readout,
+                split.wildtype,
+            )
+            outputs.append(head(features).reshape(-1).cpu().numpy())
+
+    predictions = np.concatenate(outputs).astype(np.float64)
+    assert len(predictions) == len(split.sequences), (
+        f"predicted {len(predictions)} values for {len(split.sequences)} variants; "
+        "batching dropped or duplicated rows"
+    )
+    return predictions
