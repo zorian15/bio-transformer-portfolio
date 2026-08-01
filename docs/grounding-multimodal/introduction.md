@@ -3,6 +3,10 @@
 **Status:** complete through the grounding-versus-leakage ablation (issues #1 and
 #5). See [Results](results.md).
 
+Useful companion: the [appendix](../appendix.md) covers the transformer machinery
+these reports assume, including what a protein language model actually returns
+and why pooling its output is a choice rather than a default.
+
 ## The question
 
 Protein language models learn from amino-acid sequence alone. Curated databases
