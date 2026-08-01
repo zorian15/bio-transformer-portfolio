@@ -42,3 +42,9 @@ site/
 # Run logs and manifests (regenerable; provenance for committed metrics is
 # copied into each project results/ dir)
 logs/
+
+# Coverage artifacts, written by pytest-cov.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

@@ -32,6 +32,11 @@ dependencies:
       - ruff
       - mypy
       - pytest
+      # Coverage measurement, for reviewing which lines a PR's tests actually
+      # reach. Deliberately not wired into `addopts`: coverage instruments every
+      # call and would slow the default suite for every run, when what it is for
+      # is an occasional `pytest --cov=biotp` during review.
+      - pytest-cov
       # Already arrives transitively via transformers and datasets, but declared
       # because tests/test_conventions.py parses the CI workflows with it, and a
       # test should not rest on another package happening to pull it in.
