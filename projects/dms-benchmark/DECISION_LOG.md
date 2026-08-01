@@ -15,6 +15,31 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-08-01: refactor the training layer before the SLURM array (issue #14)
+
+- **Question / hypothesis:** three findings deferred from PR #13's reviews, none of them a correctness bug, all of them places where the discipline `embeddings.py` got right did not cross into `training.py`. The question is whether they can be cleaned up without moving a single number, since the SLURM array is the first place a diverged early-stopping rule would corrupt a real result rather than a toy one.
+- **Setup:** no experiment. Refactor only: a frozen `LoraSpec` grouping the adapter hyperparameters, a shared `_BestEpochTracker` owning best-epoch selection and the stopping rule for both `train` and `train_lora`, and a `tests/conftest.py` consolidating three diverged encoder stubs.
+- **Result:** every committed artifact is byte-identical, re-run against the final state of the branch.
+
+  | artifact | rung / cohort | outcome |
+  |---|---|---|
+  | `grounding-multimodal/results/arms_all.csv`, `arms_all.md`, `ablation_all.json`, `per_class_f1_all.json` | Project 1, all | byte-identical |
+  | `grounding-multimodal/results/arms_annotated.csv`, `arms_annotated.md`, `ablation_annotated.json`, `per_class_f1_annotated.json` | Project 1, annotated | byte-identical |
+  | `dms-benchmark/results/frozen.csv` | rung 2 | byte-identical |
+  | `dms-benchmark/results/zero_shot.csv` | rung 1 | every Spearman identical, see below |
+
+  The shared loop is bit-identical by construction rather than by luck: `_BestEpochTracker` draws no randomness and changes no arithmetic, so the number and order of RNG draws in both loops is unchanged. The re-runs confirm that rather than discover it.
+
+  **One pre-existing discrepancy, surfaced but not caused here.** Re-running rung 1 reproduces all eighteen Spearman values exactly, but emits an extra `n_val` column. `zero_shot.csv` was committed in `c0e0c63`; the `n_val` column entered the row schema in the *later* commit `5ce2c90`, which capped validation and re-ran rung 2 but not rung 1. The committed file is therefore stale in its columns, not in its numbers, and this branch does not touch that script. Left alone rather than folded in silently.
+
+  **No `EMBEDDING_IMPL_VERSION` bump, deliberately.** The diff to `embeddings.py` is two renames plus one docstring: no change to pooling, truncation, normalization, layer selection, dtype, or the empty-text rule. `test_cache_key_is_stable_for_the_recorded_spec` passing with `GOLDEN_SPEC_KEY` untouched is the evidence.
+
+  **One history format change.** `train_lora`'s history reports the adapter configuration as a nested `"lora": {"rank", "alpha", "target_modules"}` block, replacing the loose `lora_rank` / `lora_alpha` / `target_modules` keys. Nothing in the repo read the old keys, but manifests already written under `logs/` carry them, so a reader comparing an old manifest to a new one should expect the shape to differ.
+
+  **What the fixture consolidation bought, beyond tidiness.** Only the embeddings stub poisoned its non-residue slots, so a special-token read was loud on the frozen path and invisible on the LoRA path. That asymmetry is part of why the missing position guard survived PR #13's review. `TinyEsm` now poisons unconditionally, and a test reads BOS and EOS through `_encode_batch` to prove the fixture can tell; against the unpoisoned fixture it returns an ordinary-looking vector. The LoRA path also had no coverage of the `mean` readout at all, which the poisoned fixture makes worth adding.
+
+- **Decision / next step:** the training layer is ready for the SLURM array PR. `LORA_SPEC` in `projects/dms-benchmark/scripts/run_arms.py` is the one object an array task now needs to carry, in place of three module constants that were not reachable from the CLI. Deliberately still out of scope: the `MeanReadout()` / `AtPosition(positions)` sum type that would make `readout` and `positions` an unrepresentable-invalid-state pair. It collapses several of these findings at once and is worth revisiting if a fourth readout ever lands, since adding one currently means editing five sites across two modules.
+
 ### 2026-08-01: the rung-3 estimate was wrong because it never modelled validation
 
 - **Question / hypothesis:** smoke-test one fine-tuned configuration locally, to validate the path before submitting 81 SLURM jobs and to turn #11's ~7 GPU-hour estimate into a measurement.
