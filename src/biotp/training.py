@@ -484,7 +484,7 @@ def _encode_batch(
     """
     import torch
 
-    from biotp.embeddings import _mean_pool_residues, _select_residue
+    from biotp.embeddings import mean_pool_residues, select_residue
 
     truncated = [sequence[: encoder.max_sequence_length] for sequence in sequences]
     rows = list(truncated)
@@ -504,17 +504,17 @@ def _encode_batch(
         lengths = torch.tensor(
             [len(sequence) for sequence in truncated], device=representations.device
         )
-        collapsed: Any = _mean_pool_residues(representations, lengths)
+        collapsed: Any = mean_pool_residues(representations, lengths)
         return collapsed
 
     assert positions is not None  # Established by _check_split; narrows for mypy.
     index = torch.tensor(positions, device=representations.device)
 
     if readout == "at_position":
-        return _select_residue(representations, index)
+        return select_residue(representations, index)
 
-    # Residue i sits at token i + 1, matching _select_residue's own offset.
-    mutant = _select_residue(representations[:-1], index)
+    # Residue i sits at token i + 1, matching select_residue's own offset.
+    mutant = select_residue(representations[:-1], index)
     reference = representations[-1][index + 1]
     return mutant - reference
 

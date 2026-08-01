@@ -65,6 +65,13 @@ EXPECTED_FUNCTIONS = {
         # sharing the guard let one path raise where the other returned a padding
         # vector. See issue #11.
         "validate_positions",
+        # The collapse arithmetic the guard above protects, promoted for the
+        # same reason and one issue later: biotp.training and the Project 1
+        # benchmark script both import these across a module boundary, so the
+        # underscore said private while two other trees depended on them. See
+        # issue #14.
+        "mean_pool_residues",
+        "select_residue",
     },
     "biotp.evaluation": {
         "grouped_split",

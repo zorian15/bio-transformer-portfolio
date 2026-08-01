@@ -199,8 +199,13 @@ def _length_bucketed_batches(lengths: list[int], batch_size: int) -> list[list[i
     ]
 
 
-def _mean_pool_residues(representations: Any, lengths: Any) -> Any:
+def mean_pool_residues(representations: Any, lengths: Any) -> Any:
     """Mean over residue positions for a whole batch at once, on-device.
+
+    Public for the same reason `validate_positions` is: the LoRA rung in
+    `biotp.training` and the benchmark script both collapse activations this way,
+    and a helper with consumers in two other trees is public whatever its name
+    says. Under the underscore, a rename here broke them at import.
 
     Args:
         representations: (batch, positions, width) activations from the model.
@@ -258,8 +263,11 @@ def validate_positions(
         )
 
 
-def _select_residue(representations: Any, positions: Any) -> Any:
+def select_residue(representations: Any, positions: Any) -> Any:
     """Gather one residue vector per batch row, on-device.
+
+    Public alongside `mean_pool_residues`: both rungs of the DMS ladder read the
+    same residue through this, and only one of them lives in this module.
 
     Args:
         representations: (batch, positions, width) activations from the model.
@@ -381,13 +389,13 @@ def embed_sequences(
             batch_lengths = torch.tensor(
                 [lengths[index] for index in indices], device=representations.device
             )
-            collapsed = _mean_pool_residues(representations, batch_lengths)
+            collapsed = mean_pool_residues(representations, batch_lengths)
         else:
             assert positions is not None  # Established above; narrows for mypy.
             batch_positions = torch.tensor(
                 [positions[index] for index in indices], device=representations.device
             )
-            collapsed = _select_residue(representations, batch_positions)
+            collapsed = select_residue(representations, batch_positions)
         # Scatter back to the caller's order, undoing the length bucketing.
         out[indices] = collapsed.float().cpu().numpy()
 
