@@ -442,3 +442,90 @@ def test_rejects_a_wildtype_of_the_wrong_length() -> None:
     )
     with pytest.raises(AssertionError, match="substitutions preserve length"):
         run(readout="difference_at_position", train_data=split)
+
+
+# --- predict_lora --------------------------------------------------------------
+
+
+def fitted() -> tuple[Esm2Bundle, Any]:
+    set_seed(7)
+    encoder, head, _ = run(max_epochs=2)
+    return encoder, head
+
+
+def test_predict_returns_one_value_per_variant() -> None:
+    encoder, head = fitted()
+    split = toy_split(10, seed=3)
+    out = training.predict_lora(encoder, head, split, "at_position", batch_size=4)
+    assert out.shape == (10,)
+    assert np.isfinite(out).all()
+
+
+def test_predict_follows_the_input_order() -> None:
+    """Row i of the output must be the prediction for variant i.
+
+    Reversing the split must reverse the predictions exactly. A batching bug that
+    permuted rows would still produce finite, plausible numbers and a Spearman
+    that merely looked disappointing.
+    """
+    encoder, head = fitted()
+    split = toy_split(9, seed=4)
+    flipped = training.VariantSplit(
+        sequences=list(reversed(split.sequences)),
+        positions=list(reversed(split.positions or [])),
+        targets=split.targets[::-1].copy(),
+        wildtype=None,
+    )
+
+    forward = training.predict_lora(encoder, head, split, "at_position", batch_size=4)
+    backward = training.predict_lora(
+        encoder, head, flipped, "at_position", batch_size=4
+    )
+    np.testing.assert_allclose(forward, backward[::-1], rtol=1e-5)
+
+
+def test_predict_is_invariant_to_batch_size() -> None:
+    """Dropout must be off, so two batchings agree exactly rather than nearly."""
+    encoder, head = fitted()
+    split = toy_split(12, seed=5)
+    one = training.predict_lora(encoder, head, split, "at_position", batch_size=1)
+    many = training.predict_lora(encoder, head, split, "at_position", batch_size=12)
+    np.testing.assert_allclose(one, many, rtol=1e-5)
+
+
+def test_predict_supports_the_difference_readout() -> None:
+    encoder, head, _ = run(
+        max_epochs=2,
+        readout="difference_at_position",
+        train_data=difference_split(24, seed=0),
+        val_data=difference_split(8, seed=1),
+    )
+    out = training.predict_lora(
+        encoder, head, difference_split(6, seed=9), "difference_at_position", 4
+    )
+    assert out.shape == (6,)
+
+
+def test_predict_rejects_an_empty_split() -> None:
+    encoder, head = fitted()
+    empty = training.VariantSplit(
+        sequences=[],
+        positions=[],
+        targets=np.asarray([], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        training.predict_lora(encoder, head, empty, "at_position", batch_size=4)
+
+
+def test_predict_rejects_an_out_of_range_position() -> None:
+    """The same guard training uses, so scoring cannot be laxer than fitting."""
+    encoder, head = fitted()
+    broken = training.VariantSplit(
+        sequences=["MKTFF"],
+        positions=[99],
+        targets=np.asarray([0.0], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        training.predict_lora(encoder, head, broken, "at_position", batch_size=4)

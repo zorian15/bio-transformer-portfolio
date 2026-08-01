@@ -91,7 +91,17 @@ EXPECTED_FUNCTIONS = {
     # `train_lora` is separate from `train` rather than a mode inside it: adapting
     # the encoder puts it in the loop, so it takes sequences where `train` takes
     # precomputed features. See issue #11.
-    "biotp.training": {"build_head", "train", "predict", "train_lora"},
+    "biotp.training": {
+        "build_head",
+        "train",
+        "predict",
+        "train_lora",
+        # Scoring lives outside the training functions so evaluation cannot run
+        # with dropout active or gradients enabled. `predict` cannot serve the
+        # LoRA rung, whose encoder is part of the model rather than a source of
+        # precomputed features.
+        "predict_lora",
+    },
     # Rung 1 of the DMS ladder: the pretrained model with no gradient updates.
     # Only masked-marginals, deliberately, so a number carrying that name cannot
     # have come from the cheaper wild-type-marginal rule. See issue #11.
