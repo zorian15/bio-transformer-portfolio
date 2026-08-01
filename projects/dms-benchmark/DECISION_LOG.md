@@ -15,6 +15,42 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-08-01: the rung-3 estimate was wrong because it never modelled validation
+
+- **Question / hypothesis:** smoke-test one fine-tuned configuration locally, to validate the path before submitting 81 SLURM jobs and to turn #11's ~7 GPU-hour estimate into a measurement.
+- **Setup:** `R1AB_SARS2_Flynn_2022`, `fold_modulo_5`, `at_position`, N=128, seed 0, `esm2_t12_35M_UR50D`, LoRA rank 8 alpha 16 on `q_proj`/`v_proj`, lr 1e-4, batch 8, on MPS.
+- **Result:** the first attempt was **killed after eleven minutes without finishing**. The cause is not the training set.
+
+  ProteinGym's folds are 975 to 1,271 variants each, and fold 1 is the validation set. The fine-tuned rung re-encodes all of it every epoch, because unlike the frozen rung it has no cache to read from. At N=32 that is validating on **thirty times more data than it trains on**, and validation is roughly 90% of the run. The estimate in #11 counted training passes and ignored validation entirely.
+
+  Validation is now subsampled to **256 variants**, fixed per (assay, scheme) and independent of N and seed so every arm selects its stopping epoch against the same held-out variants.
+
+  **The cap is applied to both supervised rungs, not just the expensive one.** The ladder's whole claim is that its rungs differ in exactly one thing; selecting the stopping epoch on different data would be a second difference. Rung 2 was re-run under the cap, in 37.5s rather than 1201s because the embeddings were already cached, which is the first real demonstration that the assay-level cache does what it was built for.
+
+  **The cap changes nothing that matters.** `A4GRB6` random at N=2048 went 0.734 to 0.733, `R1AB` 0.577 to 0.562, and no qualitative conclusion moves. 256 variants estimate a validation loss perfectly well.
+
+  With the cap, one N=128 configuration takes **441.7s**. Extrapolating over the N curve, where per-epoch encoder work is roughly `3N + 256` forward-equivalents:
+
+  | | estimate |
+  |---|---:|
+  | per (assay, scheme, readout, seed), full N curve | 1.76 h on MPS |
+  | 81 jobs | 143 MPS-hours |
+  | on an L40S at 8x to 15x | **10 to 18 GPU-hours** |
+
+  So #11's ~7 GPU-hours was optimistic by roughly a factor of two, and the reason was a cost the estimate never modelled rather than a mis-measured one.
+
+  **A first real data point, on one configuration:**
+
+  | rung | Spearman |
+  |---|---:|
+  | zero-shot 35M | −0.073 |
+  | frozen + head | 0.116 |
+  | LoRA + head | **0.179** |
+
+  One point is not a result. It is the first evidence that adapting the encoder buys something the frozen representation does not, on a position-disjoint split where rung 2 was struggling, which is exactly where the ladder's headline lives.
+
+- **Decision / next step:** the rung-3 path works end to end and is affordable. Submit the array in the SLURM PR. Quote 10-18 GPU-hours rather than 7, and say why the earlier number was wrong.
+
 ### 2026-08-01: supervision beats the prior only where the test sites were seen, and the readout mattered more than the label count
 
 - **Question / hypothesis:** rung 2 of the #11 ladder. What does supervision buy at a fixed representation, how does it scale with labels, and does the answer survive holding out residue positions rather than rows?

@@ -85,15 +85,15 @@ floor beside it:
 
 | assay | scheme | N=32 | N=128 | N=512 | N=2048 | zero-shot |
 |---|---|---:|---:|---:|---:|---:|
-| `A4GRB6` | random | 0.227 | 0.367 | 0.520 | **0.734** | 0.516 |
-| | modulo | 0.218 | 0.262 | 0.310 | 0.357 | **0.488** |
-| | contiguous | 0.022 | 0.024 | 0.015 | 0.024 | **0.237** |
-| `CCR5` | random | 0.123 | 0.210 | 0.309 | **0.367** | 0.353 |
-| | modulo | 0.121 | 0.228 | 0.292 | 0.348 | 0.350 |
-| | contiguous | 0.168 | 0.157 | 0.234 | 0.241 | **0.395** |
-| `R1AB` | random | 0.068 | 0.155 | 0.346 | **0.577** | −0.026 |
-| | modulo | 0.027 | 0.114 | 0.207 | **0.202** | −0.073 |
-| | contiguous | 0.098 | 0.149 | 0.129 | **0.147** | −0.077 |
+| `A4GRB6` | random | 0.231 | 0.364 | 0.528 | **0.733** | 0.516 |
+| | modulo | 0.219 | 0.264 | 0.304 | 0.348 | **0.488** |
+| | contiguous | 0.019 | 0.021 | 0.051 | 0.100 | **0.237** |
+| `CCR5` | random | 0.126 | 0.201 | 0.293 | 0.350 | 0.353 |
+| | modulo | 0.090 | 0.223 | 0.285 | 0.342 | 0.350 |
+| | contiguous | 0.159 | 0.158 | 0.226 | 0.238 | **0.395** |
+| `R1AB` | random | 0.067 | 0.171 | 0.346 | **0.562** | −0.026 |
+| | modulo | 0.014 | 0.117 | 0.184 | **0.198** | −0.073 |
+| | contiguous | 0.103 | 0.137 | 0.130 | **0.147** | −0.077 |
 
 ### Supervision beats the prior only where the test sites were seen
 
@@ -121,20 +121,20 @@ Mean over seeds at N=2048:
 
 | assay | scheme | mean | at_position | difference |
 |---|---|---:|---:|---:|
-| `A4GRB6` | random | 0.548 | **0.855** | 0.800 |
-| | modulo | 0.068 | **0.605** | 0.399 |
-| | contiguous | −0.146 | 0.088 | **0.131** |
-| `CCR5` | random | 0.259 | **0.468** | 0.374 |
-| | modulo | 0.297 | **0.386** | 0.361 |
-| | contiguous | 0.181 | 0.240 | **0.302** |
-| `R1AB` | random | 0.281 | **0.753** | 0.696 |
-| | modulo | 0.096 | **0.296** | 0.213 |
+| `A4GRB6` | random | 0.548 | **0.856** | 0.795 |
+| | modulo | 0.048 | **0.596** | 0.400 |
+| | contiguous | 0.067 | 0.102 | **0.131** |
+| `CCR5` | random | 0.249 | **0.425** | 0.374 |
+| | modulo | 0.295 | **0.366** | **0.366** |
+| | contiguous | 0.181 | 0.243 | **0.291** |
+| `R1AB` | random | 0.244 | **0.750** | 0.693 |
+| | modulo | 0.085 | **0.296** | 0.212 |
 | | contiguous | 0.029 | **0.260** | 0.152 |
 
-Mean pooling is worse in **every one of the nine cells**, often by a factor of
-two or more, and on `A4GRB6` under `contiguous` it is actively negative. That is
-the readout the field reaches for by default and the one this pipeline would have
-used if the parameter had been given one.
+Mean pooling is worst or joint-worst in **every one of the nine cells**, often by
+a factor of two or more, and by twelve times on `A4GRB6` under `modulo` (0.048
+against 0.596). That is the readout the field reaches for by default and the one
+this pipeline would have used if the parameter had been given one.
 
 This is the clearest vindication of a design decision in the project. Making the
 readout a pre-registered axis rather than a knob cost three times the rung-2
@@ -142,9 +142,9 @@ compute, which was twenty minutes, and the alternative was reporting roughly hal
 the achievable performance while believing it was a property of protein language
 models.
 
-`at_position` wins seven cells and `difference_at_position` wins two, both under
-`contiguous`. So there is no single best readout either, which is the other reason
-not to have selected one.
+`at_position` wins six cells outright, `difference_at_position` two (both under
+`contiguous`), and they tie on one. So there is no single best readout either,
+which is the other reason not to have selected one.
 
 ### Site coverage, not label count, is what saturates
 
@@ -166,7 +166,48 @@ Recording this was worth it. Without it, `A4GRB6` under `contiguous` sitting at
 0.02 across every label count reads as a broken pipeline rather than as a model
 that has seen 181 of 266 sites and cannot transfer to the remaining block.
 
-## Rung 3
+## Rung 3: a first measured point
 
-Not yet reported. Runs on SLURM, since the fine-tuned rung cannot use the
-embedding cache and is the entire compute budget of the benchmark.
+The full grid runs on SLURM, since the fine-tuned rung cannot use the embedding
+cache and is the entire compute budget. One configuration has been run locally to
+validate the path and measure throughput.
+
+`R1AB_SARS2_Flynn_2022`, `modulo`, `at_position`, N=128, seed 0:
+
+| rung | Spearman |
+|---|---:|
+| zero-shot 35M | −0.073 |
+| frozen + head | 0.116 |
+| **LoRA + head** | **0.179** |
+
+One point is not a result, but it is the first evidence that adapting the encoder
+buys something the frozen representation does not, on a position-disjoint split
+where rung 2 was struggling.
+
+### The cost estimate was wrong, and validation was why
+
+Issue #11 estimated roughly 7 GPU-hours for the 81-job array. That figure counted
+training passes and ignored validation entirely.
+
+ProteinGym's folds are ~1,000 to 1,270 variants each, and the fine-tuned rung
+re-encodes the whole validation fold every epoch. At N=32 that is validating on
+thirty times more data than training on, and validation becomes about 90% of the
+run. The first smoke attempt was killed after eleven minutes without finishing a
+single N=128 configuration.
+
+Validation is now subsampled to 256 variants, fixed per assay and scheme and
+independent of N and seed, and **applied to both supervised rungs** so model
+selection stays identical and the ladder still differs in exactly one thing.
+Re-running rung 2 under the cap moved nothing that matters: `A4GRB6` random at
+N=2048 went 0.734 to 0.733, `R1AB` 0.577 to 0.562. 256 variants are plenty for
+choosing a stopping epoch.
+
+With the cap, one N=128 configuration takes 442s on MPS. Extrapolating over the
+full N curve gives about 1.8 hours per (assay, scheme, readout, seed) on this
+laptop, so roughly **143 MPS-hours, or 10 to 18 GPU-hours on an L40S** depending
+on the speedup that hardware actually delivers. The jobs are independent, so
+wall-clock is far less than that.
+
+The revised figure is worth stating plainly rather than quietly correcting: the
+original estimate was optimistic by roughly a factor of two, and the reason was a
+cost the estimate never modelled.

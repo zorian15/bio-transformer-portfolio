@@ -65,7 +65,7 @@ def spread(folds: int = 5, per_fold: int = 6) -> pd.DataFrame:
 
 
 def test_splits_assign_every_fold_to_a_role() -> None:
-    splits = run_arms.make_splits(spread(), "fold_modulo_5")
+    splits = run_arms.make_splits(spread(), "TEST", "fold_modulo_5")
     assert len(splits.test) == 6
     assert len(splits.val) == 6
     assert len(splits.train_pool) == 18
@@ -82,19 +82,19 @@ def test_splits_reject_position_leakage_under_modulo() -> None:
     """
     leaky = assay_frame({0: [1, 2, 3], 1: [4, 5, 6], 2: [1, 7, 8], 3: [9], 4: [10]})
     with pytest.raises(AssertionError, match="hold out residue positions"):
-        run_arms.make_splits(leaky, "fold_modulo_5")
+        run_arms.make_splits(leaky, "TEST", "fold_modulo_5")
 
 
 def test_splits_allow_shared_positions_under_random() -> None:
     """`random` is supposed to share positions, so the guard must not fire."""
     shared = assay_frame({0: [1, 2, 3], 1: [1, 2, 3], 2: [1, 2, 3], 3: [1], 4: [2]})
-    splits = run_arms.make_splits(shared, "fold_random_5")
+    splits = run_arms.make_splits(shared, "TEST", "fold_random_5")
     assert len(splits.train_pool) == 5
 
 
 def test_splits_reject_an_unknown_scheme() -> None:
     with pytest.raises(AssertionError, match="unknown scheme"):
-        run_arms.make_splits(spread(), "fold_made_up_5")
+        run_arms.make_splits(spread(), "TEST", "fold_made_up_5")
 
 
 # --- Subsampling --------------------------------------------------------------
@@ -154,3 +154,30 @@ def test_the_grid_covers_the_pre_registered_axes() -> None:
     assert {c.checkpoint for c in configs} == {run_arms.LADDER_CHECKPOINT}
     assert {c.n for c in configs} == set(run_arms.TRAINING_SIZES)
     assert {c.seed for c in configs} == set(run_arms.SEEDS)
+
+
+def test_validation_is_capped_and_stable() -> None:
+    """Validation exists to pick a stopping epoch, not to be a second test set.
+
+    Uncapped, the fine-tuned rung re-encodes the whole ~1000-variant fold every
+    epoch, which at N=32 is thirty times more work than training. The cap has to
+    be fixed per (assay, scheme) and independent of N and seed, so every arm
+    selects its stopping epoch against the same variants.
+    """
+    big = assay_frame(
+        {fold: list(range(fold * 400, (fold + 1) * 400)) for fold in range(5)}
+    )
+    first = run_arms.make_splits(big, "ASSAY_A", "fold_modulo_5")
+    again = run_arms.make_splits(big, "ASSAY_A", "fold_modulo_5")
+
+    assert len(first.val) == run_arms.VAL_SUBSAMPLE
+    assert first.val.tolist() == again.val.tolist(), "must not vary between calls"
+    assert (
+        run_arms.make_splits(big, "ASSAY_B", "fold_modulo_5").val.tolist()
+        != first.val.tolist()
+    ), "different assays should not share a draw"
+
+
+def test_a_small_validation_fold_is_left_alone() -> None:
+    splits = run_arms.make_splits(spread(), "ASSAY_A", "fold_modulo_5")
+    assert len(splits.val) == 6, "smaller than the cap, so untouched"

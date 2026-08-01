@@ -82,6 +82,16 @@ TEST_FOLD = 0
 VAL_FOLD = 1
 
 TRAINING_SIZES = (32, 128, 512, 2048)
+
+# Validation exists only to pick the early-stopping epoch, and ProteinGym's folds
+# are ~1000-1270 variants each. Left uncapped, the fine-tuned rung re-encodes all
+# of them every epoch: at N=32 that is validating on thirty times more data than
+# it trains on, and validation becomes ~90% of the run.
+#
+# Capped identically for both supervised rungs, not just the expensive one. The
+# ladder's whole claim is that its rungs differ in exactly one thing, and model
+# selection on different data would be a second difference.
+VAL_SUBSAMPLE = 256
 SEEDS = (0, 1, 2)
 
 # Batch sizes. On MPS the binding constraint is the attention matrix rather than
@@ -131,7 +141,7 @@ def load_inputs(data_root: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
     return pd.read_parquet(table_path), json.loads(metadata_path.read_text())
 
 
-def make_splits(assay: pd.DataFrame, scheme: str) -> Splits:
+def make_splits(assay: pd.DataFrame, assay_id: str, scheme: str) -> Splits:
     """Partition one assay by ProteinGym's fold assignment for `scheme`.
 
     Asserts the property the scheme claims: under `modulo` and `contiguous` no
@@ -142,9 +152,21 @@ def make_splits(assay: pd.DataFrame, scheme: str) -> Splits:
     assert scheme in SCHEMES, f"unknown scheme {scheme!r}"
     folds = assay[scheme].to_numpy()
 
+    full_val = np.flatnonzero(folds == VAL_FOLD)
+    # Fixed per (assay, scheme) and independent of N and seed, so every arm picks
+    # its stopping epoch against the same held-out variants.
+    val_rng = np.random.default_rng(
+        [zlib.crc32(assay_id.encode()), zlib.crc32(scheme.encode()), 7919]
+    )
+    val = (
+        full_val
+        if len(full_val) <= VAL_SUBSAMPLE
+        else np.sort(val_rng.choice(full_val, size=VAL_SUBSAMPLE, replace=False))
+    )
+
     splits = Splits(
         test=np.flatnonzero(folds == TEST_FOLD),
-        val=np.flatnonzero(folds == VAL_FOLD),
+        val=val,
         train_pool=np.flatnonzero((folds != TEST_FOLD) & (folds != VAL_FOLD)),
     )
     for name, rows in asdict(splits).items():
@@ -395,7 +417,7 @@ def evaluate(config: Config, table: pd.DataFrame, metadata: dict, cache_dir: Pat
     assert not assay.empty, f"no rows for assay {config.assay!r}"
     wildtype = metadata["assays"][config.assay]["target_seq"]
 
-    splits = make_splits(assay, config.scheme)
+    splits = make_splits(assay, config.assay, config.scheme)
     set_seed(config.seed)
 
     row: dict[str, Any] = {**asdict(config)}
@@ -439,6 +461,7 @@ def evaluate(config: Config, table: pd.DataFrame, metadata: dict, cache_dir: Pat
         int(assay.iloc[rows]["position"].nunique()) if len(rows) else 0
     )
     row["n_train_pool"] = len(splits.train_pool)
+    row["n_val"] = len(splits.val)
     return row
 
 
