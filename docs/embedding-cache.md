@@ -9,10 +9,15 @@ optimization, and makes a wrong cache hit expensive in the way that matters.
 
 A cache entry is reused only when **both** halves of its key match:
 
-1. **The inputs**: the exact sequences or texts, including their order and count.
+1. **The inputs**: the exact sequences or texts, including their order and count,
+   and the residue positions when one is requested. Under the `at_position`
+   readout the position is part of the input's identity, since the same sequence
+   read at two positions is two different vectors, so the hashed item is
+   `f"{sequence}@{position}"` rather than the sequence alone.
 2. **The spec**: every parameter of the embedding code that changes the output.
 
-The spec is built by `sequence_embedding_spec` and `text_embedding_spec`:
+The spec is built by `sequence_embedding_spec(model_name, readout)` and
+`text_embedding_spec`:
 
 | Field | Why it is keyed |
 |---|---|
@@ -20,7 +25,7 @@ The spec is built by `sequence_embedding_spec` and `text_embedding_spec`:
 | `impl_version` | Catches changes no other field describes |
 | `max_sequence_length` | Truncation changes long proteins |
 | `repr_layer_policy` | Reading a different layer changes everything |
-| `pooling` | Mean over residues versus anything else |
+| `pooling` | Carries the readout: mean over residues versus a single residue |
 | `dtype` | Output precision |
 | `empty_text` (text only) | Zero vector versus encoding `""` |
 
@@ -119,3 +124,19 @@ The v1 vectors are not lost to the argument, incidentally.
 rewrite, and `test_embed_sequences_matches_the_frozen_reference` checks that v2
 still reproduces them within float32 tolerance. The version bump says "these are
 different"; the anchor says "and here is how much".
+
+## A change that needed no bump: the readout parameter
+
+Project 2 (issue #11) added a second readout, `at_position`, which reads one
+residue instead of pooling all of them. `embed_sequences` and `cached_embeddings`
+therefore take `readout` and `positions`, neither with a default, so a caller that
+has not thought about the readout cannot get one by accident.
+
+This is the opposite case to v2, and it is worth naming as such. A named field
+already describes the change: `pooling` carries the readout, so the two readouts
+land in separate cache files under different keys, and nothing stale can be
+served. The `mean` value is byte-identical to the string that predates the
+parameter, so every vector cached for Project 1 stays valid and its arms
+reproduce bit-for-bit. `EMBEDDING_IMPL_VERSION` stays at 2, and
+`test_cache_key_is_stable_for_the_recorded_spec` passes unmodified, which is the
+evidence for that claim rather than a nuisance to route around.

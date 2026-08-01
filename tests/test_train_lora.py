@@ -1,0 +1,444 @@
+"""Tests for biotp.training.train_lora.
+
+Unlike the embedding tests, these cannot run against a duck-typed stub: `peft`
+attaches by walking real `nn.Module` children and matching leaf names, so the
+fixture is a genuine two-layer transformer-shaped module using fair-esm's naming
+(`layers.N.self_attn.q_proj`). That naming is the thing under test as much as the
+training loop is, since a `target_modules` list that matches nothing produces a
+model that trains, converges, and has adapted nothing.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import pytest
+
+from biotp import training
+from biotp.embeddings import Esm2Bundle
+from biotp.utils import set_seed
+
+WIDTH = 16
+VOCAB = 33
+LIMIT = 64
+BOS, PAD, EOS = 0, 1, 2
+TOKENS = {aa: 4 + offset for offset, aa in enumerate("ACDEFGHIKLMNPQRSTVWY")}
+
+
+def build_tiny_encoder() -> Any:
+    """A transformer-shaped module using fair-esm's attention leaf names."""
+    import torch
+    from torch import nn
+
+    class TinyAttention(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.q_proj = nn.Linear(WIDTH, WIDTH)
+            self.k_proj = nn.Linear(WIDTH, WIDTH)
+            self.v_proj = nn.Linear(WIDTH, WIDTH)
+            self.out_proj = nn.Linear(WIDTH, WIDTH)
+
+        def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+            weights = torch.softmax(
+                self.q_proj(hidden) @ self.k_proj(hidden).transpose(1, 2) / WIDTH**0.5,
+                dim=-1,
+            )
+            out: torch.Tensor = self.out_proj(weights @ self.v_proj(hidden))
+            return out
+
+    class TinyLayer(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.self_attn = TinyAttention()
+            self.fc1 = nn.Linear(WIDTH, WIDTH)
+
+        def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+            return hidden + self.fc1(torch.relu(self.self_attn(hidden)))
+
+    class TinyEsm(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed_tokens = nn.Embedding(VOCAB, WIDTH)
+            self.layers = nn.ModuleList([TinyLayer(), TinyLayer()])
+
+        def forward(
+            self, tokens: torch.Tensor, repr_layers: list[int]
+        ) -> dict[str, Any]:
+            hidden = self.embed_tokens(tokens)
+            for layer in self.layers:
+                hidden = layer(hidden)
+            return {"representations": {layer: hidden for layer in repr_layers}}
+
+    return TinyEsm()
+
+
+def batch_converter(batch: list[tuple[str, str]]) -> tuple[Any, Any, Any]:
+    import torch
+
+    longest = max(len(sequence) for _, sequence in batch)
+    tokens = torch.full((len(batch), longest + 2), PAD, dtype=torch.long)
+    for row, (_, sequence) in enumerate(batch):
+        tokens[row, 0] = BOS
+        for column, residue in enumerate(sequence):
+            tokens[row, column + 1] = TOKENS[residue]
+        tokens[row, len(sequence) + 1] = EOS
+    return [label for label, _ in batch], [text for _, text in batch], tokens
+
+
+def tiny_bundle() -> Esm2Bundle:
+    return Esm2Bundle(
+        model=build_tiny_encoder(),
+        alphabet=None,
+        batch_converter=batch_converter,
+        embedding_dim=WIDTH,
+        repr_layer=2,
+        max_sequence_length=LIMIT,
+        device="cpu",
+    )
+
+
+def toy_split(count: int, seed: int) -> training.VariantSplit:
+    """Variants of one wild type, with a target that is a function of the mutation.
+
+    The target is learnable from the mutated residue alone, so a run that fails
+    to reduce loss has a broken optimizer rather than an impossible task.
+    """
+    rng = np.random.default_rng(seed)
+    residues = "ACDEFGHIKLMNPQRSTVWY"
+    wildtype = "MKTFFVLLLACDEFGHIKLM"
+
+    sequences: list[str] = []
+    positions: list[int] = []
+    targets: list[float] = []
+    for _ in range(count):
+        index = int(rng.integers(0, len(wildtype)))
+        mutant = residues[int(rng.integers(0, len(residues)))]
+        sequences.append(wildtype[:index] + mutant + wildtype[index + 1 :])
+        positions.append(index)
+        targets.append(float(TOKENS[mutant]))
+
+    return training.VariantSplit(
+        sequences=sequences,
+        positions=positions,
+        targets=np.asarray(targets, dtype=np.float32),
+        wildtype=None,
+    )
+
+
+def run(
+    max_epochs: int = 3, **overrides: Any
+) -> tuple[Esm2Bundle, Any, dict[str, Any]]:
+    encoder = tiny_bundle()
+    head = training.build_head(WIDTH, 1, "regression")
+    kwargs: dict[str, Any] = {
+        "encoder": encoder,
+        "head": head,
+        "train_data": toy_split(24, seed=0),
+        "val_data": toy_split(8, seed=1),
+        "readout": "at_position",
+        "max_epochs": max_epochs,
+        "lr": 1e-2,
+        "batch_size": 8,
+        "lora_rank": 4,
+        "lora_alpha": 8,
+        "target_modules": ("q_proj", "v_proj"),
+        "seed": 0,
+    }
+    kwargs.update(overrides)
+    return training.train_lora(**kwargs)
+
+
+def test_lora_attaches_to_the_named_modules() -> None:
+    """A target_modules list that matches nothing must not pass silently.
+
+    This is the failure the whole rung-2-to-rung-3 comparison rests on: an
+    encoder with no adapters attached still trains its head, still converges, and
+    reports a number indistinguishable from the frozen rung.
+    """
+    _, _, history = run()
+    assert history["trainable_encoder_parameters"] > 0
+    # 2 layers x 2 adapted modules x (lora_A, lora_B).
+    assert history["lora_parameter_tensors"] == 8
+
+
+def test_the_base_encoder_stays_frozen() -> None:
+    """Exactly the adapters are trainable, and nothing else.
+
+    A ratio threshold would be the obvious assertion and would be wrong here: the
+    LoRA share of a model is a property of its scale, and on this deliberately
+    tiny fixture rank-4 adapters are a sixth of the weights. On 35M they are well
+    under a percent. The scale-free invariant is that the trainable set *is* the
+    adapter set.
+    """
+    encoder, _, history = run()
+
+    still_trainable = [
+        name
+        for name, parameter in encoder.model.named_parameters()
+        if "lora_" not in name and parameter.requires_grad
+    ]
+    assert not still_trainable, f"base weights left trainable: {still_trainable[:5]}"
+
+    adapter_parameters = sum(
+        parameter.numel()
+        for name, parameter in encoder.model.named_parameters()
+        if "lora_" in name
+    )
+    assert history["trainable_encoder_parameters"] == adapter_parameters
+    assert history["trainable_encoder_parameters"] < history["encoder_parameters"]
+
+
+def test_base_weights_are_unchanged_by_training() -> None:
+    """The invariant that makes adapter-only checkpointing correct.
+
+    The best-epoch snapshot saves only the adapters, because the base cannot
+    differ between epochs. Cloning the whole encoder instead would allocate a
+    full copy on-device every time validation improved: about 140 MB at 35M and
+    2.6 GB at 650M. That shortcut is valid exactly as long as the base really is
+    frozen, so this pins it rather than trusting it.
+
+    peft wraps modules in place and keeps the original Parameter object as the
+    wrapped layer's base, so holding a reference across the call compares the
+    same tensor rather than a same-named one.
+    """
+    import torch
+
+    encoder = tiny_bundle()
+    watched = encoder.model.layers[0].self_attn.q_proj.weight
+    before = watched.detach().clone()
+
+    trained, _, history = run(max_epochs=4, encoder=encoder)
+
+    torch.testing.assert_close(watched, before)
+    assert history["best_epoch"] >= 0, "nothing trained, so the check is vacuous"
+
+    adapters = [
+        parameter
+        for name, parameter in trained.model.named_parameters()
+        if "lora_B" in name
+    ]
+    assert adapters, "no adapter weights found"
+    assert any(
+        bool((parameter != 0).any()) for parameter in adapters
+    ), "every lora_B is still zero, so training moved nothing and the base check is vacuous"
+
+
+def test_training_reduces_loss() -> None:
+    _, _, history = run(max_epochs=8)
+    assert history["train_loss"][-1] < history["train_loss"][0]
+
+
+def test_restores_the_best_validation_epoch() -> None:
+    _, _, history = run(max_epochs=6)
+    assert history["best_epoch"] == int(np.argmin(history["val_loss"]))
+
+
+def test_history_records_the_split_sizes_and_mode() -> None:
+    _, _, history = run()
+    assert history["mode"] == "lora"
+    assert history["n_train"] == 24
+    assert history["n_val"] == 8
+
+
+def test_rejects_a_target_module_that_matches_nothing() -> None:
+    """peft raises here, and that error is deliberately not softened.
+
+    An encoder with no adapters attached still trains its head and still reports
+    a plausible number, which would be rung 2's result filed under rung 3.
+    """
+    with pytest.raises(ValueError):
+        run(target_modules=("no_such_projection",))
+
+
+def test_rejects_mismatched_targets_and_sequences() -> None:
+    broken = training.VariantSplit(
+        sequences=["MKT", "MKA"],
+        positions=[0, 1],
+        targets=np.asarray([1.0], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        run(train_data=broken)
+
+
+def test_rejects_an_empty_split() -> None:
+    empty = training.VariantSplit(
+        sequences=[],
+        positions=[],
+        targets=np.asarray([], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        run(train_data=empty)
+
+
+def test_at_position_readout_requires_positions() -> None:
+    without = training.VariantSplit(
+        sequences=["MKT", "MKA"],
+        positions=None,
+        targets=np.asarray([1.0, 2.0], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        run(train_data=without)
+
+
+@pytest.mark.parametrize("rank", [0, -1])
+def test_rejects_a_nonpositive_rank(rank: int) -> None:
+    with pytest.raises(AssertionError):
+        run(lora_rank=rank)
+
+
+def test_train_points_at_train_lora_rather_than_raising_blindly() -> None:
+    """The old guard said LoRA was unimplemented; it now says where it lives."""
+    head = training.build_head(WIDTH, 1, "regression")
+    features = np.zeros((4, WIDTH), dtype=np.float32)
+    targets = np.zeros(4, dtype=np.float32)
+
+    with pytest.raises(NotImplementedError, match="train_lora"):
+        training.train(
+            head,
+            (features, targets),
+            (features, targets),
+            "lora",
+            max_epochs=1,
+            lr=1e-3,
+        )
+
+
+# --- Guards the frozen rung had and this one did not (PR #13 review) ----------
+
+
+@pytest.mark.parametrize("position", [-1, 99])
+def test_rejects_an_out_of_range_position(position: int) -> None:
+    """The LoRA path must reject what the frozen path rejects.
+
+    Before this guard, `_check_split` validated only the *count* of positions, so
+    an out-of-range index reached `torch.gather` and came back as whatever token
+    sat at that slot: a padding vector when the batch held a longer sequence, the
+    BOS vector for -1. Both train, and both report a plausible Spearman.
+    """
+    split = training.VariantSplit(
+        sequences=["MKTFF", "ACDEF"],
+        positions=[position, 0],
+        targets=np.asarray([1.0, 2.0], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        run(train_data=split)
+
+
+def test_rejects_a_position_lost_to_truncation() -> None:
+    split = training.VariantSplit(
+        sequences=["A" * (LIMIT + 10)],
+        positions=[LIMIT + 5],
+        targets=np.asarray([1.0], dtype=np.float32),
+        wildtype=None,
+    )
+    with pytest.raises(AssertionError):
+        run(train_data=split)
+
+
+def test_rejects_an_encoder_that_already_carries_adapters() -> None:
+    """peft wraps in place, so a reused bundle would stack adapter sets.
+
+    A sweep over readout, N and seed is the obvious shape for rung 3, and peft
+    only warns in this case. Every run after the first would silently be a
+    continuation of its predecessor rather than an independent fit.
+    """
+    encoder = tiny_bundle()
+    run(encoder=encoder)
+
+    with pytest.raises(AssertionError, match="already carries LoRA adapters"):
+        run(encoder=encoder)
+
+
+def test_the_seed_changes_the_batch_order() -> None:
+    """The ladder's seed axis has to be real on rung 3, not just on rung 2.
+
+    The frozen rung draws its permutation from the global torch RNG, so it
+    already responds to seeding. A rung 3 whose shuffle depended only on the
+    epoch would report three identical runs as a three-seed spread, and the
+    standard deviations in the results table would be fiction.
+    """
+
+    def losses(seed: int) -> list[float]:
+        # `seed` governs the batch order only. Head initialisation and dropout
+        # draw from the global torch RNG, which is the caller's to set, exactly
+        # as Project 1's run_arms does it. Pinning it here isolates the one
+        # source of randomness under test.
+        set_seed(1234)
+        return run(max_epochs=3, seed=seed)[2]["train_loss"]
+
+    assert losses(0) == losses(0), "same seed must reproduce"
+    assert losses(0) != losses(1), "different seeds must give different batch orders"
+
+
+# --- Difference-at-position, the third pre-registered readout ------------------
+
+
+WILDTYPE = "MKTFFVLLLACDEFGHIKLM"
+
+
+def difference_split(count: int, seed: int) -> training.VariantSplit:
+    base = toy_split(count, seed)
+    return training.VariantSplit(
+        sequences=base.sequences,
+        positions=base.positions,
+        targets=base.targets,
+        wildtype=WILDTYPE,
+    )
+
+
+def test_difference_readout_is_zero_against_the_wild_type_itself() -> None:
+    """The closed form: a variant identical to the reference differs by nothing.
+
+    Cheap and exact, and it catches the two ways this readout goes wrong, an
+    off-by-one on either the mutant or the reference row, without needing to know
+    what the encoder computes.
+    """
+    import torch
+
+    encoder = tiny_bundle()
+    out = training._encode_batch(
+        encoder, [WILDTYPE], [7], "difference_at_position", WILDTYPE
+    )
+    torch.testing.assert_close(out, torch.zeros_like(out))
+
+
+def test_difference_readout_trains_end_to_end() -> None:
+    _, _, history = run(
+        max_epochs=4,
+        readout="difference_at_position",
+        train_data=difference_split(24, seed=0),
+        val_data=difference_split(8, seed=1),
+    )
+    assert history["readout"] == "difference_at_position"
+    assert history["train_loss"][-1] < history["train_loss"][0]
+
+
+def test_difference_readout_requires_a_wildtype() -> None:
+    with pytest.raises(AssertionError, match="no wildtype"):
+        run(
+            readout="difference_at_position",
+            train_data=toy_split(24, seed=0),
+            val_data=toy_split(8, seed=1),
+        )
+
+
+def test_a_wildtype_on_another_readout_is_rejected() -> None:
+    """Silently ignoring it would let a caller think the difference was taken."""
+    with pytest.raises(AssertionError, match="does not"):
+        run(readout="at_position", train_data=difference_split(24, seed=0))
+
+
+def test_rejects_a_wildtype_of_the_wrong_length() -> None:
+    split = training.VariantSplit(
+        sequences=["MKTFF"],
+        positions=[0],
+        targets=np.asarray([1.0], dtype=np.float32),
+        wildtype="MKTFFVLLL",
+    )
+    with pytest.raises(AssertionError, match="substitutions preserve length"):
+        run(readout="difference_at_position", train_data=split)

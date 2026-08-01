@@ -84,3 +84,4 @@ nav:
       - Experiment log: dms-benchmark/decision-log.md
   - "Project 3: tcr-antibody-lm":
       - Experiment log: tcr-antibody-lm/decision-log.md
+  - Appendix: appendix.md

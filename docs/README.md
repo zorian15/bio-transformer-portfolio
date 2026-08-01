@@ -16,6 +16,13 @@ If you want the science, read
 experiments run on, read [run logging](run-logging.md) and the
 [embedding cache](embedding-cache.md).
 
+If a transformer concept these reports lean on is unfamiliar, the
+[appendix](appendix.md) explains the ones that change what a number means:
+what a protein language model actually returns and why the readout is a
+choice, why fine-tuning cannot use the embedding cache, what LoRA does and does
+not buy, how zero-shot scoring works without training, and why the splits here
+hold out sites rather than rows.
+
 Each project also keeps an **experiment log**: a chronological record of runs and
 the decisions they drove, newest first. The reports describe the setup; the logs
 record what actually happened, including the wrong turns.

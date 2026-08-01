@@ -70,9 +70,13 @@ best point rather than its final one, and `max_epochs` becomes a time budget
 rather than a hyperparameter that silently changes results.
 
 **Unimplemented modes raise.** `train` accepts `linear_probe`, `lora`, or `full`,
-and only `linear_probe` exists today. The other two raise `NotImplementedError`
-rather than falling back, so a call asking for LoRA cannot receive a linear probe
-under LoRA's name. `mode` has no default, so every call site states its regime.
+and only `linear_probe` runs through `train` itself. `full` raises
+`NotImplementedError` rather than falling back, so a call asking for it cannot
+receive a linear probe under its name, and `lora` raises pointing at
+`train_lora`, which takes sequences rather than precomputed features because
+adapting the encoder puts it back in the training loop. Project 1 uses
+`linear_probe` throughout; LoRA arrived with Project 2's ladder. `mode` has no
+default, so every call site states its regime.
 
 `predict` is separate from `train` so evaluation cannot accidentally run with
 dropout active or gradients enabled.

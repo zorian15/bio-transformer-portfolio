@@ -17,7 +17,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -60,8 +60,25 @@ PROGRESS_EVERY_N_BATCHES = 25
 #      so the vectors are not bit-identical to v1's.
 EMBEDDING_IMPL_VERSION = 2
 
+# How residue-level activations collapse into one vector per sequence.
+#
+# "mean" is Project 1's rule, and its spec string is byte-identical to the one
+# that predates this parameter, so every vector cached before issue #11 stays
+# valid under an unchanged key. Do not reword it to match the readout name.
+#
+# "at_position" reads a single residue, which is what a single-substitution DMS
+# variant needs: one changed residue in a 400-residue protein moves the pooled
+# vector by one part in 400, so the perturbation the head has to learn from is
+# swamped by the wild-type component that every variant shares.
+Readout = Literal["mean", "at_position"]
 
-def sequence_embedding_spec(model_name: str) -> dict[str, Any]:
+READOUT_SPEC_VALUES: dict[str, str] = {
+    "mean": "mean_over_residues_excluding_special_tokens",
+    "at_position": "single_residue_at_zero_based_position",
+}
+
+
+def sequence_embedding_spec(model_name: str, readout: Readout) -> dict[str, Any]:
     """Everything about the sequence path that changes the resulting vectors.
 
     This is the cache key's semantic half. A field belongs here if changing it
@@ -72,14 +89,20 @@ def sequence_embedding_spec(model_name: str) -> dict[str, Any]:
     `repr_layer_policy` records the rule rather than the layer number, since the
     number is determined by the checkpoint and would require loading the model to
     read, which would defeat the point of checking the cache first.
+
+    `pooling` carries the readout, so two readouts of the same sequences land in
+    different cache files rather than one overwriting the other.
     """
+    assert (
+        readout in READOUT_SPEC_VALUES
+    ), f"unknown readout {readout!r}; expected one of {sorted(READOUT_SPEC_VALUES)}"
     return {
         "kind": "esm2_sequence",
         "impl_version": EMBEDDING_IMPL_VERSION,
         "model_name": model_name,
         "max_sequence_length": MAX_SEQUENCE_LENGTH,
         "repr_layer_policy": "final",
-        "pooling": "mean_over_residues_excluding_special_tokens",
+        "pooling": READOUT_SPEC_VALUES[readout],
         "dtype": "float32",
     }
 
@@ -209,15 +232,70 @@ def _mean_pool_residues(representations: Any, lengths: Any) -> Any:
     return masked.sum(dim=1) / lengths.unsqueeze(1).to(representations.dtype)
 
 
+def validate_positions(
+    sequences: list[str], positions: list[int], max_sequence_length: int
+) -> None:
+    """Assert every requested residue index still exists after truncation.
+
+    Public because both rungs of the DMS ladder need it and they live in
+    different modules. Sharing the collapse arithmetic without sharing this guard
+    is what let the frozen path raise on an out-of-range position while the LoRA
+    path silently returned a padding vector.
+
+    A position past the truncation limit is an error rather than a clamp: the
+    residue is not in the model's view, so returning the nearest one in scope
+    would score a different mutation and still look plausible.
+    """
+    assert len(positions) == len(sequences), (
+        f"got {len(positions)} positions for {len(sequences)} sequences; "
+        "they are matched by index"
+    )
+    for index, (position, sequence) in enumerate(zip(positions, sequences)):
+        length = min(len(sequence), max_sequence_length)
+        assert 0 <= position < length, (
+            f"position {position} is outside sequence {index}, which has "
+            f"{length} residues after truncation to {max_sequence_length}"
+        )
+
+
+def _select_residue(representations: Any, positions: Any) -> Any:
+    """Gather one residue vector per batch row, on-device.
+
+    Args:
+        representations: (batch, positions, width) activations from the model.
+        positions: (batch,) zero-based residue indices into the sequence.
+
+    Residues occupy token positions [1, length] because position 0 is BOS, so
+    residue i lives at token i + 1. Getting that offset wrong reads BOS for
+    residue 0 and the preceding residue everywhere else, which is a shift small
+    enough to keep training and reporting plausible numbers. The stub model in
+    the tests poisons every non-residue slot so the first case is loud.
+    """
+    import torch
+
+    token_positions = positions + 1
+    index = token_positions.view(-1, 1, 1).expand(-1, 1, representations.shape[2])
+    return torch.gather(representations, 1, index).squeeze(1)
+
+
 def embed_sequences(
-    model: Esm2Bundle, sequences: list[str], batch_size: int
+    model: Esm2Bundle,
+    sequences: list[str],
+    batch_size: int,
+    readout: Readout,
+    positions: list[int] | None,
 ) -> np.ndarray:
-    """Return per-sequence embeddings, mean-pooled over residues.
+    """Return one embedding per sequence, collapsed according to `readout`.
 
     Args:
         model: a bundle from load_esm2.
         sequences: amino-acid strings.
         batch_size: sequences per forward pass.
+        readout: "mean" to pool every residue, or "at_position" to read a single
+            one. See READOUT_SPEC_VALUES.
+        positions: zero-based residue index per sequence for "at_position", or
+            None for "mean". Required either way, with no default, so a caller
+            that has not thought about the readout cannot get one by accident.
 
     Returns:
         Array of shape (len(sequences), embedding_dim), where embedding_dim is
@@ -227,7 +305,9 @@ def embed_sequences(
 
     Pooling covers residue positions only: the BOS and EOS tokens and any padding
     are excluded, so a short sequence in a batch of long ones is unaffected by its
-    neighbours. Sequences longer than the checkpoint's limit are truncated.
+    neighbours. Sequences longer than the checkpoint's limit are truncated, and a
+    requested position lost to that truncation is an error rather than a clamp:
+    the residue is not in the model's view, so there is no vector to return.
 
     Batches are formed by length rather than in dataset order, and results are
     scattered back so row i is always the embedding of sequence i. That reordering
@@ -240,6 +320,18 @@ def embed_sequences(
 
     assert sequences, "embed_sequences received no sequences"
     assert batch_size > 0, f"batch_size must be positive, got {batch_size}"
+    assert (
+        readout in READOUT_SPEC_VALUES
+    ), f"unknown readout {readout!r}; expected one of {sorted(READOUT_SPEC_VALUES)}"
+
+    if readout == "mean":
+        assert positions is None, (
+            "the mean readout pools every residue, so positions cannot be honoured; "
+            "pass None rather than values that would be silently ignored"
+        )
+    else:
+        assert positions is not None, f"readout {readout!r} requires positions"
+        validate_positions(sequences, positions, model.max_sequence_length)
 
     truncated = [sequence[: model.max_sequence_length] for sequence in sequences]
     assert all(truncated), "at least one sequence was empty"
@@ -282,12 +374,22 @@ def embed_sequences(
             result = model.model(tokens, repr_layers=[model.repr_layer])
         representations = result["representations"][model.repr_layer]
 
-        batch_lengths = torch.tensor(
-            [lengths[index] for index in indices], device=representations.device
-        )
-        pooled = _mean_pool_residues(representations, batch_lengths)
+        # `indices` are positions in the caller's list, so both the lengths and
+        # the requested residues travel with their own sequence rather than being
+        # applied to whatever the bucketing put in the slot.
+        if readout == "mean":
+            batch_lengths = torch.tensor(
+                [lengths[index] for index in indices], device=representations.device
+            )
+            collapsed = _mean_pool_residues(representations, batch_lengths)
+        else:
+            assert positions is not None  # Established above; narrows for mypy.
+            batch_positions = torch.tensor(
+                [positions[index] for index in indices], device=representations.device
+            )
+            collapsed = _select_residue(representations, batch_positions)
         # Scatter back to the caller's order, undoing the length bucketing.
-        out[indices] = pooled.float().cpu().numpy()
+        out[indices] = collapsed.float().cpu().numpy()
 
         done_slots += slots_per_batch[batch_index]
         done_sequences += len(batch)
@@ -444,24 +546,45 @@ def _write_cache(
     np.savez(cache_path, **payload)
 
 
+def _cache_items(sequences: list[str], positions: list[int] | None) -> list[str]:
+    """The strings hashed into the cache key.
+
+    Under a residue readout the position is part of the input's identity: the
+    same sequence read at two positions is two different vectors, so hashing the
+    sequence alone would serve the first under the second's key. That is issue
+    #4's failure mode reached by a new route, so it is closed the same way.
+    """
+    if positions is None:
+        return sequences
+    return [
+        f"{sequence}@{position}" for sequence, position in zip(sequences, positions)
+    ]
+
+
 def cached_embeddings(
-    sequences: list[str], model_name: str, cache_path: Path, batch_size: int
+    sequences: list[str],
+    model_name: str,
+    cache_path: Path,
+    batch_size: int,
+    readout: Readout,
+    positions: list[int] | None,
 ) -> np.ndarray:
     """Load embeddings from cache_path, or compute and cache them if absent.
 
-    The cache key covers the sequences, the model name, and every parameter of the
-    embedding code that changes the output (see `sequence_embedding_spec`), so
-    neither a changed input set nor a changed implementation can silently return
-    stale vectors. `batch_size` is excluded on purpose: it does not affect output.
+    The cache key covers the sequences, the requested positions, the model name,
+    and every parameter of the embedding code that changes the output (see
+    `sequence_embedding_spec`), so neither a changed input set nor a changed
+    implementation can silently return stale vectors. `batch_size` is excluded on
+    purpose: it does not affect output.
     """
-    spec = sequence_embedding_spec(model_name)
-    cache_key = _cache_key(sequences, spec)
+    spec = sequence_embedding_spec(model_name, readout)
+    cache_key = _cache_key(_cache_items(sequences, positions), spec)
     cached = _load_if_key_matches(cache_path, cache_key, spec)
     if cached is not None:
         return cached
 
     model = load_esm2(model_name)
-    embeddings = embed_sequences(model, sequences, batch_size)
+    embeddings = embed_sequences(model, sequences, batch_size, readout, positions)
     _write_cache(cache_path, embeddings, cache_key, spec)
     return embeddings
 
