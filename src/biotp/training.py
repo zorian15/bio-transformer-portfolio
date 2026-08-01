@@ -779,6 +779,19 @@ def predict_lora(
     head.eval()
 
     outputs: list[np.ndarray] = []
+    # `no_grad`, not the `inference_mode` that `train` and `predict` use. This
+    # function also runs inside train_lora's epoch loop, and ESM-2's rotary
+    # embedding writes its sin/cos tables onto the module during the forward,
+    # keeping them until the sequence length or the device changes. A table
+    # created under inference mode is an inference tensor, and the next epoch's
+    # backward refuses to save one, so validation would poison training.
+    # `no_grad` produces ordinary tensors and has no such restriction.
+    #
+    # The failure is a crash rather than a wrong number, and it is currently
+    # unreachable on the DMS ladder because substitutions preserve length, so
+    # the cached length never changes after the first forward. This is the one
+    # scoring path documented as shared between in-loop validation and final
+    # scoring, so it is written to be safe in the stricter of the two.
     with torch.no_grad():
         for start in range(0, len(split.sequences), batch_size):
             stop = start + batch_size

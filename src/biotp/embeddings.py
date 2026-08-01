@@ -561,6 +561,14 @@ def _cache_items(sequences: list[str], positions: list[int] | None) -> list[str]
     same sequence read at two positions is two different vectors, so hashing the
     sequence alone would serve the first under the second's key. That is issue
     #4's failure mode reached by a new route, so it is closed the same way.
+
+    The joined form is injective, which is the whole job of a function that
+    builds cache keys and was previously left to the reader to verify. `@` is
+    outside the 20-residue alphabet and outside the decimal digits, so it appears
+    exactly once in `f"{sequence}@{position}"` and splits the string back into
+    the pair that made it. Two distinct (sequence, position) pairs therefore
+    cannot produce one item, and a collision here would silently serve one
+    variant's vector for another's.
     """
     if positions is None:
         return sequences
