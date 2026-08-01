@@ -515,6 +515,14 @@ def main() -> int:
             run.record("assays", list(assays))
             run.record("variants", len(table))
 
+        if args.rung == "lora":
+            # The adapter configuration is not reachable from argv, so without
+            # this the manifest describes a rung-3 run without saying what was
+            # adapted, and the only record of rank and alpha is the commit hash.
+            # One nested block rather than three loose keys, matching the shape
+            # train_lora reports in its history.
+            run.record("lora", LORA_SPEC.as_history_block())
+
         if args.all:
             configs = list(grid(args.rung, assays))
         else:
