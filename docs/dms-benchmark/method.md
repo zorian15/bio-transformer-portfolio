@@ -32,6 +32,14 @@ substitution inside the ladder, and costs almost nothing because masked-marginal
 scoring needs one forward pass per *distinct mutated position* rather than one
 per variant.
 
+**Rung 3's adapters** are rank 8, \(\alpha = 16\), attached to the `q_proj` and
+`v_proj` projections of every attention block. Those three values travel together
+as a single frozen `LoraSpec` (`LORA_SPEC` in `run_arms.py`) rather than as loose
+constants, so a SLURM array task carries one serializable object per job and the
+run manifest records the adapter configuration as one nested `lora` block. The
+spec validates itself at construction, which means a malformed configuration
+fails while the job parses its arguments rather than after loading a checkpoint.
+
 ## Scoring
 
 Rung 1 scores a variant by how much likelihood the model moves from the wild-type
@@ -123,6 +131,13 @@ the numbering with a different sequence shifts every position by a constant and
 leaves every score finite and plausible. The reference file carries `target_seq`,
 so the sequence is taken from there and never fetched separately, and the
 agreement is asserted at preparation time for every variant.
+
+**One stopping rule for both supervised rungs.** Rungs 2 and 3 select the best
+epoch and stop early through the same implementation, not two copies of it. The
+ladder's whole claim is that consecutive rungs differ in exactly one respect, so a
+patience or improvement test changed in one loop and not the other would move the
+measured rung 2 to rung 3 delta while every test still passed and every number
+still looked reasonable.
 
 **Subsampling.** Training draws are seeded from a CRC of the configuration rather
 than Python's `hash`, which is randomized per process. Seeding from `hash` would

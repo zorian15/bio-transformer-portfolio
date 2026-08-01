@@ -67,7 +67,10 @@ only one place the task is recorded.
 checked every epoch, the best weights are kept, and early stopping fires after 10
 epochs without improvement. A run that overfits late is therefore reported at its
 best point rather than its final one, and `max_epochs` becomes a time budget
-rather than a hyperparameter that silently changes results.
+rather than a hyperparameter that silently changes results. `train` and
+`train_lora` share one implementation of that rule, parameterised only by what
+each snapshots, so the patience and the improvement test cannot drift apart
+between the two.
 
 **Unimplemented modes raise.** `train` accepts `linear_probe`, `lora`, or `full`,
 and only `linear_probe` runs through `train` itself. `full` raises

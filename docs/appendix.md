@@ -107,7 +107,8 @@ h = Wx + \frac{\alpha}{r}\,B\,(A x)
 \]
 
 where \(A\) is \(r \times 480\), \(B\) is \(480 \times r\), and the rank \(r\) is
-small (4 in this project). That is 3,840 trainable numbers standing in for 230,000.
+small (8 in this project, with \(\alpha = 16\), so the detour is scaled by 2). That
+is 7,680 trainable numbers standing in for 230,000.
 
 Three things worth knowing:
 
