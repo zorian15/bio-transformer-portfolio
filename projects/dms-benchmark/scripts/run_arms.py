@@ -42,6 +42,7 @@ import sys
 import zlib
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -194,57 +195,97 @@ def variant_split(assay: pd.DataFrame, rows: np.ndarray, wildtype: str | None):
     )
 
 
-def residue_features(
-    assay: pd.DataFrame,
-    rows: np.ndarray,
+@lru_cache(maxsize=8)
+def _assay_features_cached(
+    assay_id: str,
     readout: str,
     wildtype: str,
     checkpoint: str,
-    cache_dir: Path,
+    cache_dir: str,
+    sequences: tuple[str, ...],
+    positions: tuple[int, ...],
 ) -> np.ndarray:
-    """Frozen features for rung 2, composed from cached embeddings.
+    """Embed one assay's whole variant set once, for one readout.
 
-    `difference_at_position` is composed here rather than being a third encoder
-    mode: it is `at_position(mutant) - at_position(wildtype)`, and the wild type
-    is one sequence per assay, so the second term needs only the distinct
-    positions rather than one row per variant.
+    The cache key hashes the exact list of items, so embedding only the rows of
+    the current arm would give every arm a different key and therefore a miss.
+    Embedding the assay once and indexing into it is what makes rung 2 cost one
+    pass rather than one per grid point: 324 arms share three matrices.
+
+    `lru_cache` needs hashable arguments, hence the tuples; the on-disk cache
+    survives across processes and this only avoids repeating work within one.
     """
-    subset = assay.iloc[rows]
-    sequences = subset["mutated_sequence"].tolist()
-    positions = subset["position"].tolist()
-
+    directory = Path(cache_dir)
     if readout == "mean":
         return cached_embeddings(
-            sequences,
+            list(sequences),
             checkpoint,
-            cache_dir / f"{checkpoint}_mean.npz",
+            directory / f"{assay_id}_{checkpoint}_mean.npz",
             EMBED_BATCH_SIZE,
             readout="mean",
             positions=None,
         )
 
     mutant = cached_embeddings(
-        sequences,
+        list(sequences),
         checkpoint,
-        cache_dir / f"{checkpoint}_at_position.npz",
+        directory / f"{assay_id}_{checkpoint}_at_position.npz",
         EMBED_BATCH_SIZE,
         readout="at_position",
-        positions=positions,
+        positions=list(positions),
     )
     if readout == "at_position":
         return mutant
 
+    # The wild type is one sequence, so the reference term needs only the
+    # distinct positions rather than one row per variant.
     distinct = sorted(set(positions))
     reference = cached_embeddings(
         [wildtype] * len(distinct),
         checkpoint,
-        cache_dir / f"{checkpoint}_wildtype.npz",
+        directory / f"{assay_id}_{checkpoint}_wildtype.npz",
         EMBED_BATCH_SIZE,
         readout="at_position",
         positions=distinct,
     )
     index = {position: row for row, position in enumerate(distinct)}
     return mutant - reference[[index[position] for position in positions]]
+
+
+def assay_features(
+    assay: pd.DataFrame,
+    assay_id: str,
+    readout: str,
+    wildtype: str,
+    checkpoint: str,
+    cache_dir: Path,
+) -> np.ndarray:
+    """Frozen features for every variant of one assay, aligned to its row order."""
+    features = _assay_features_cached(
+        assay_id,
+        readout,
+        wildtype,
+        checkpoint,
+        str(cache_dir),
+        tuple(assay["mutated_sequence"].tolist()),
+        tuple(int(position) for position in assay["position"]),
+    )
+    assert len(features) == len(assay), (
+        f"got {len(features)} feature rows for {len(assay)} variants; the cached "
+        "matrix does not describe this assay"
+    )
+    return features
+
+
+@lru_cache(maxsize=2)
+def cached_bundle(checkpoint: str) -> Any:
+    """Load a checkpoint once per process.
+
+    `--all` walks many configurations against the same encoder, and 650M is a
+    2.5 GB load. Without this the zero-shot sweep would pay that cost once per
+    grid point rather than once per checkpoint.
+    """
+    return load_esm2(checkpoint)
 
 
 def run_zero_shot(
@@ -258,7 +299,7 @@ def run_zero_shot(
             subset["position"], subset["wildtype_aa"], subset["mutant_aa"]
         )
     ]
-    bundle = load_esm2(checkpoint)
+    bundle = cached_bundle(checkpoint)
     scores = masked_marginal_scores(bundle, wildtype, variants, ZERO_SHOT_BATCH_SIZE)
     return {
         "spearman": spearman(subset["DMS_score"].tolist(), scores.tolist()),
@@ -268,6 +309,7 @@ def run_zero_shot(
 
 def run_frozen(
     assay: pd.DataFrame,
+    assay_id: str,
     splits: Splits,
     rows: np.ndarray,
     readout: str,
@@ -276,8 +318,11 @@ def run_frozen(
     cache_dir: Path,
 ) -> dict[str, Any]:
     """Rung 2: supervision at a fixed representation."""
+    everything = assay_features(
+        assay, assay_id, readout, wildtype, checkpoint, cache_dir
+    )
     features = {
-        name: residue_features(assay, part, readout, wildtype, checkpoint, cache_dir)
+        name: everything[part]
         for name, part in (("train", rows), ("val", splits.val), ("test", splits.test))
     }
     labels = {
@@ -365,6 +410,7 @@ def evaluate(config: Config, table: pd.DataFrame, metadata: dict, cache_dir: Pat
             row.update(
                 run_frozen(
                     assay,
+                    config.assay,
                     splits,
                     rows,
                     config.readout,
