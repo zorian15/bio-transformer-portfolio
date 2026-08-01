@@ -54,6 +54,7 @@ from biotp.evaluation import spearman
 from biotp.runlog import DEFAULT_LOG_DIR, get_logger, run_context
 from biotp.training import (
     LORA_READOUTS,
+    LoraSpec,
     VariantSplit,
     build_head,
     predict,
@@ -103,9 +104,11 @@ LORA_BATCH_SIZE = 8
 MAX_EPOCHS = 200
 LEARNING_RATE = 1e-3
 LORA_LEARNING_RATE = 1e-4
-LORA_RANK = 8
-LORA_ALPHA = 16
-LORA_TARGET_MODULES = ("q_proj", "v_proj")
+
+# The adapter configuration every rung-3 run uses. One object rather than three
+# constants, so the SLURM array can carry it per job and the run manifest records
+# it as one block.
+LORA_SPEC = LoraSpec(rank=8, alpha=16, target_modules=("q_proj", "v_proj"))
 
 log = get_logger("dms-run-arms")
 
@@ -393,9 +396,7 @@ def run_lora(
         max_epochs=MAX_EPOCHS,
         lr=LORA_LEARNING_RATE,
         batch_size=LORA_BATCH_SIZE,
-        lora_rank=LORA_RANK,
-        lora_alpha=LORA_ALPHA,
-        target_modules=LORA_TARGET_MODULES,
+        lora=LORA_SPEC,
         seed=seed,
     )
     test = variant_split(assay, splits.test, reference)

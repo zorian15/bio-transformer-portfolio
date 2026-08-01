@@ -354,6 +354,67 @@ class VariantSplit:
     wildtype: str | None
 
 
+@dataclass(frozen=True)
+class LoraSpec:
+    """Which adapters to attach and how large to make them.
+
+    Grouped into a type because these three move together and mean nothing
+    apart: they map one-for-one onto `peft.LoraConfig(r=, lora_alpha=,
+    target_modules=)`. Everything else `train_lora` takes describes how to
+    optimize rather than what to adapt, and stays a parameter.
+
+    Named `LoraSpec` rather than `LoraConfig` to avoid peft's own symbol, which
+    `train_lora` imports inside its body and which would otherwise shadow this
+    class exactly where it is used. "Spec" here is adapter hyperparameters; it
+    is unrelated to the embedding specs that feed the cache key.
+
+    Validation lives in the constructor rather than in `train_lora` so a SLURM
+    array task fails while parsing its configuration, not after loading a 650M
+    checkpoint. No field takes a default: the point of grouping the parameters
+    is not to acquire defaults through the back door.
+
+    Attributes:
+        rank: adapter rank.
+        alpha: adapter scaling.
+        target_modules: leaf module names to adapt. fair-esm's ESM-2 exposes
+            q_proj, k_proj, v_proj and out_proj under layers.N.self_attn.
+    """
+
+    rank: int
+    alpha: int
+    target_modules: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        assert self.rank > 0, f"rank must be positive, got {self.rank}"
+        assert self.alpha > 0, f"alpha must be positive, got {self.alpha}"
+        # A bare string is iterable, so `target_modules="q_proj"` would pass an
+        # emptiness check and reach peft as ['q', '_', 'p', 'r', 'o', 'j'],
+        # matching nothing. peft's error names the characters, not the mistake.
+        assert isinstance(self.target_modules, tuple), (
+            f"target_modules must be a tuple of module names, got "
+            f"{type(self.target_modules).__name__}"
+        )
+        assert (
+            self.target_modules
+        ), "target_modules is empty, so nothing would be adapted"
+        for name in self.target_modules:
+            assert (
+                isinstance(name, str) and name
+            ), f"target_modules holds a non-name entry {name!r}"
+
+    def as_history_block(self) -> dict[str, Any]:
+        """This config as one JSON-safe block, for a history dict or a manifest.
+
+        `target_modules` becomes a list rather than a tuple so a manifest written
+        and then read back compares equal to the one that produced it.
+        """
+        return {
+            "rank": self.rank,
+            "alpha": self.alpha,
+            "target_modules": list(self.target_modules),
+        }
+
+
 def _check_split(
     split: VariantSplit, readout: LoraReadout, max_sequence_length: int, name: str
 ) -> None:
@@ -467,9 +528,7 @@ def train_lora(
     max_epochs: int,
     lr: float,
     batch_size: int,
-    lora_rank: int,
-    lora_alpha: int,
-    target_modules: tuple[str, ...],
+    lora: LoraSpec,
     seed: int,
 ) -> tuple[Any, Any, dict]:
     """Fine-tune LoRA adapters on the encoder alongside the head.
@@ -490,10 +549,8 @@ def train_lora(
         lr: Adam learning rate, applied to adapters and head together.
         batch_size: sequences per forward pass. The binding constraint is the
             attention matrix, so this is a memory knob rather than a speed one.
-        lora_rank: adapter rank.
-        lora_alpha: adapter scaling.
-        target_modules: leaf module names to adapt. fair-esm's ESM-2 exposes
-            q_proj, k_proj, v_proj and out_proj under layers.N.self_attn.
+        lora: which adapters to attach and how large. See LoraSpec, which also
+            validates them at construction.
         seed: draws the batch order. Required, because the ladder's seed axis is
             only real if rung 3 actually varies with it: the frozen rung draws
             from the global torch RNG and so responds to seeding, and a rung 3
@@ -521,9 +578,7 @@ def train_lora(
     assert max_epochs > 0, f"max_epochs must be positive, got {max_epochs}"
     assert lr > 0, f"lr must be positive, got {lr}"
     assert batch_size > 0, f"batch_size must be positive, got {batch_size}"
-    assert lora_rank > 0, f"lora_rank must be positive, got {lora_rank}"
-    assert lora_alpha > 0, f"lora_alpha must be positive, got {lora_alpha}"
-    assert target_modules, "target_modules is empty, so nothing would be adapted"
+    # The adapter hyperparameters checked themselves when the LoraSpec was built.
 
     # peft wraps in place, so the caller's bundle is modified. Calling twice on
     # one bundle stacks a second adapter set on the first run's weights, and peft
@@ -561,9 +616,9 @@ def train_lora(
     adapted = get_peft_model(
         encoder.model,
         LoraConfig(
-            r=lora_rank,
-            lora_alpha=lora_alpha,
-            target_modules=list(target_modules),
+            r=lora.rank,
+            lora_alpha=lora.alpha,
+            target_modules=list(lora.target_modules),
             bias="none",
         ),
     )
@@ -576,7 +631,7 @@ def train_lora(
     trainable_encoder_parameters = sum(parameter.numel() for parameter in trainable)
     assert trainable_encoder_parameters > 0, (
         f"no encoder parameter is trainable after attaching LoRA to "
-        f"{target_modules}; the adapters did not attach"
+        f"{lora.target_modules}; the adapters did not attach"
     )
 
     loss_fn = nn.MSELoss()
@@ -591,9 +646,10 @@ def train_lora(
     history.update(
         {
             "readout": readout,
-            "lora_rank": lora_rank,
-            "lora_alpha": lora_alpha,
-            "target_modules": list(target_modules),
+            # One nested block rather than three loose keys, so a manifest
+            # reader finds the adapter configuration in one place and a SLURM
+            # array can round-trip the same object it was given.
+            "lora": lora.as_history_block(),
             "seed": seed,
             "encoder_parameters": encoder_parameters,
             "trainable_encoder_parameters": trainable_encoder_parameters,

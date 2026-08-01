@@ -146,9 +146,7 @@ def run(
         "max_epochs": max_epochs,
         "lr": 1e-2,
         "batch_size": 8,
-        "lora_rank": 4,
-        "lora_alpha": 8,
-        "target_modules": ("q_proj", "v_proj"),
+        "lora": training.LoraSpec(rank=4, alpha=8, target_modules=("q_proj", "v_proj")),
         "seed": 0,
     }
     kwargs.update(overrides)
@@ -183,6 +181,56 @@ def ragged_split(count: int, seed: int) -> training.VariantSplit:
         targets=np.asarray(targets, dtype=np.float32),
         wildtype=None,
     )
+
+
+# --- LoraSpec ------------------------------------------------------------------
+
+
+def test_lora_spec_is_frozen() -> None:
+    """A SLURM array holds one of these per job; a mutated copy is a lost run."""
+    import dataclasses
+
+    spec = training.LoraSpec(rank=4, alpha=8, target_modules=("q_proj",))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        spec.rank = 8  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("rank", [0, -1])
+def test_lora_spec_rejects_a_nonpositive_rank(rank: int) -> None:
+    with pytest.raises(AssertionError, match="must be positive"):
+        training.LoraSpec(rank=rank, alpha=8, target_modules=("q_proj",))
+
+
+@pytest.mark.parametrize("alpha", [0, -1])
+def test_lora_spec_rejects_a_nonpositive_alpha(alpha: int) -> None:
+    with pytest.raises(AssertionError, match="must be positive"):
+        training.LoraSpec(rank=4, alpha=alpha, target_modules=("q_proj",))
+
+
+def test_lora_spec_rejects_empty_target_modules() -> None:
+    with pytest.raises(AssertionError, match="nothing would be adapted"):
+        training.LoraSpec(rank=4, alpha=8, target_modules=())
+
+
+def test_lora_spec_rejects_a_bare_string_of_target_modules() -> None:
+    """`target_modules="q_proj"` is the easy typo, and it used to reach peft.
+
+    A string is iterable, so it survived the emptiness check and arrived as
+    ['q', '_', 'p', 'r', 'o', 'j'], matching nothing and dying inside peft with
+    a message about none of those characters being module names.
+    """
+    with pytest.raises(AssertionError, match="tuple of module names"):
+        training.LoraSpec(rank=4, alpha=8, target_modules="q_proj")  # type: ignore[arg-type]
+
+
+def test_history_records_the_adapter_config_as_one_block() -> None:
+    """One nested block, so a manifest reader finds the config in one place."""
+    _, _, history = run()
+    assert history["lora"] == {
+        "rank": 4,
+        "alpha": 8,
+        "target_modules": ["q_proj", "v_proj"],
+    }
 
 
 # --- What the fixture itself can detect ----------------------------------------
@@ -356,7 +404,11 @@ def test_rejects_a_target_module_that_matches_nothing() -> None:
     a plausible number, which would be rung 2's result filed under rung 3.
     """
     with pytest.raises(ValueError):
-        run(target_modules=("no_such_projection",))
+        run(
+            lora=training.LoraSpec(
+                rank=4, alpha=8, target_modules=("no_such_projection",)
+            )
+        )
 
 
 def test_rejects_mismatched_targets_and_sequences() -> None:
@@ -392,10 +444,8 @@ def test_at_position_readout_requires_positions() -> None:
         run(train_data=without)
 
 
-@pytest.mark.parametrize("rank", [0, -1])
-def test_rejects_a_nonpositive_rank(rank: int) -> None:
-    with pytest.raises(AssertionError):
-        run(lora_rank=rank)
+# A nonpositive rank is rejected by LoraSpec's own constructor now, so it is
+# tested there rather than here: the run never starts, which is the point.
 
 
 def test_train_points_at_train_lora_rather_than_raising_blindly() -> None:
