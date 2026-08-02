@@ -48,3 +48,8 @@ logs/
 .coverage.*
 coverage.xml
 htmlcov/
+
+# Per-task result shards from the SLURM array. One file per configuration,
+# 324 of them for rung 3; `--aggregate` combines them into <rung>.csv, which
+# is the tracked artifact. The shards are intermediates.
+*_shards/

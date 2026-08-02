@@ -824,3 +824,21 @@ def test_the_shard_directory_is_the_one_the_docs_spell_out() -> None:
             f"{path.name} does not mention {directory.name}; the docs and the "
             "code disagree about where a task writes its shard"
         )
+
+
+def test_shard_directories_are_not_committed() -> None:
+    """324 intermediates per rung must not land in git; <rung>.csv is the artifact.
+
+    `results/` is a tracked directory, so without a rule the array leaves 324
+    untracked files one `git add -A` away from being committed. Paired with
+    `test_the_shard_directory_is_the_one_the_docs_spell_out`, which pins the name
+    this pattern has to cover.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    ignored = (repo_root / ".gitignore").read_text()
+    directory = run_arms.shard_dir(Path("results"), "lora").name
+
+    assert any(
+        line.strip() == "*_shards/" or line.strip() == f"{directory}/"
+        for line in ignored.splitlines()
+    ), f".gitignore has no rule covering {directory}/"
