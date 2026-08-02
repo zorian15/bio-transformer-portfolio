@@ -366,3 +366,38 @@ def test_seed_dependent_blocks_are_never_shuffled() -> None:
         arm.shuffle_text and set(arm.blocks) & run_arms.SEED_DEPENDENT_BLOCKS
         for arm in run_arms.ARMS
     )
+
+
+def test_project_one_trains_at_its_documented_batch_size(monkeypatch) -> None:
+    """The bit-for-bit guarantee currently rests on a comment; this enforces it.
+
+    `train` gained a required `batch_size` in issue #33, and this call site passes
+    256 to keep Project 1's committed results unchanged. Nothing checked that:
+    changing it to 8 left every test in this file green while silently moving
+    every number in `results/`. Same defect class as #33, one project over.
+    """
+    seen: dict = {}
+
+    def capture(*args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return None, {"best_epoch": 0, "epochs_run": 1}
+
+    monkeypatch.setattr(run_arms, "train", capture)
+    monkeypatch.setattr(run_arms, "build_head", lambda **kwargs: None)
+    monkeypatch.setattr(run_arms, "predict", lambda *a, **k: np.array([0, 1, 0, 1]))
+    monkeypatch.setattr(
+        run_arms,
+        "assemble_features",
+        lambda *a, **k: np.zeros((4, 3), dtype=np.float32),
+    )
+    blocks = {"sequence": np.zeros((4, 3), dtype=np.float32)}
+    indices = {name: np.arange(4) for name in ("train", "val", "test")}
+
+    run_arms.run_arm(
+        run_arms.ARMS[0], blocks, indices, np.array([0, 1, 0, 1]), ["a", "b"], 0
+    )
+
+    assert seen["batch_size"] == run_arms.BATCH_SIZE == 256, (
+        "Project 1 must keep training at 256; its committed results were produced "
+        "at that batch size and nothing else pins it"
+    )

@@ -11,7 +11,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -199,15 +199,23 @@ def test_a_small_validation_fold_is_left_alone() -> None:
 
 
 def test_rung_three_records_the_adapter_configuration() -> None:
-    assert run_arms.configuration_records("lora") == {
-        "lora": {"rank": 8, "alpha": 16, "target_modules": ["q_proj", "v_proj"]}
+    """The adapter block specifically; rung 3 also records its optimiser."""
+    assert run_arms.configuration_records("lora")["lora"] == {
+        "rank": 8,
+        "alpha": 16,
+        "target_modules": ["q_proj", "v_proj"],
     }
 
 
 @pytest.mark.parametrize("rung", ["zero_shot", "frozen"])
 def test_the_other_rungs_record_no_adapter_configuration(rung: str) -> None:
-    """A block describing adapters would be a lie on a rung that attaches none."""
-    assert run_arms.configuration_records(rung) == {}
+    """A block describing adapters would be a lie on a rung that attaches none.
+
+    Asserts the absence of the adapter block rather than an empty dict: the
+    frozen rung legitimately records its optimiser, and an equality check here
+    would have made adding that look like a regression.
+    """
+    assert "lora" not in run_arms.configuration_records(rung)
 
 
 def test_every_rung_has_a_decision_recorded_for_it() -> None:
@@ -255,6 +263,12 @@ def test_the_adapter_block_survives_a_real_manifest(tmp_path: Path) -> None:
     manifest = json.loads(next(tmp_path.glob("records-test-*.json")).read_text())
 
     assert manifest["records"]["lora"] == run_arms.LORA_SPEC.as_history_block()
+    # The optimiser block rides the same loop and was going unasserted, which is
+    # how a field justified by "the manifest is the only record" reaches no
+    # manifest.
+    assert manifest["records"]["supervised"]["batch_size"] == (
+        run_arms.SUPERVISED_BATCH_SIZE
+    )
     assert LoraSpec.from_history_block(manifest["records"]["lora"]) == (
         run_arms.LORA_SPEC
     )
@@ -932,3 +946,276 @@ def test_slurm_output_goes_to_a_tracked_but_ignored_directory() -> None:
     ignored = (repo_root / ".gitignore").read_text().splitlines()
     assert f"{directory}/*" in [line.strip() for line in ignored]
     assert f"!{directory}/.gitkeep" in [line.strip() for line in ignored]
+
+
+# --- Both supervised rungs must optimise the same way ---------------------------
+#
+# The ladder's claim is that consecutive rungs differ in exactly one respect.
+# Rung 2 used to batch at 256 with lr 1e-3 and rung 3 at 8 with 1e-4, while both
+# stopped after ten epochs without improvement. Patience in epochs plus different
+# batch sizes meant rung 3 got 5x to 25x more gradient updates, so the delta the
+# whole project exists to measure mixed adaptation with optimisation budget.
+# Sharing the constants fixes it; this is what stops them drifting apart again.
+
+
+# What each supervised rung is entitled to pass differently: its data, how it
+# reads a variant, its adapters, and its seed. Everything else, named or not, has
+# to match, because the ladder's delta is only attributable while it does.
+RUNG_SPECIFIC_KWARGS = frozenset(
+    {
+        "mode",
+        "encoder",
+        "head",
+        "train_data",
+        "val_data",
+        "readout",
+        "lora",
+        "seed",
+    }
+)
+
+# Distinguishes "both rungs passed None" from "one rung did not pass this at all".
+MISSING = object()
+
+
+def capture_optimiser(monkeypatch, target: str) -> dict:
+    """Replace `target` in run_arms with a stub that records its keyword arguments.
+
+    Behavioural rather than source-inspecting. An earlier version of this test
+    asserted that `inspect.getsource` contained the literal string
+    "lr=SUPERVISED_LEARNING_RATE", which would have failed a legitimate refactor
+    that hoisted the shared arguments into a helper, and would have passed a
+    constant merely prefixed the same way. This records the values that actually
+    reach the training call.
+    """
+    seen: dict = {}
+
+    def stub(*args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        history = {"best_epoch": 0, "epochs_run": 1, "trainable_encoder_parameters": 1}
+        return (None, None, history) if target == "train_lora" else (None, history)
+
+    monkeypatch.setattr(run_arms, target, stub)
+    return seen
+
+
+def tiny_assay_and_splits(width: int = 6):
+    """A minimal assay and split triple, enough to reach the training call."""
+    frame = variant_frame(count=9, length=20)
+    splits = run_arms.Splits(
+        test=np.arange(0, 3), val=np.arange(3, 6), train_pool=np.arange(6, 9)
+    )
+    return frame, splits, np.arange(6, 9)
+
+
+def test_rung_two_trains_with_the_shared_optimiser(monkeypatch) -> None:
+    """The values reaching `train`, not the text of the call that makes it.
+
+    The constants are moved to sentinels first. Comparing against them as they
+    stand would pass against a rung wired to any other module constant that
+    happens to hold the same number, and several here are also 8. The literal
+    values are pinned separately by
+    `test_the_shared_batch_size_matches_the_committed_results`.
+    """
+    monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
+    monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
+    monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
+    seen = capture_optimiser(monkeypatch, "train")
+    monkeypatch.setattr(
+        run_arms, "assay_features", lambda *a, **k: np.zeros((9, 4), dtype=np.float32)
+    )
+    # Non-constant: spearman refuses a constant input, and it runs before
+    # the assertion this test is about.
+    monkeypatch.setattr(run_arms, "predict", lambda *a, **k: np.arange(3, dtype=float))
+    frame, splits, rows = tiny_assay_and_splits()
+
+    run_arms.run_frozen(
+        frame, "ASSAY_A", splits, rows, "mean", "M" * 20, "ckpt", Path("/tmp")
+    )
+
+    assert seen["lr"] == run_arms.SUPERVISED_LEARNING_RATE
+    assert seen["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
+    # The third leg. Patience counts epochs and MAX_EPOCHS caps how many exist,
+    # so a rung-specific ceiling hands one rung a larger budget while both still
+    # read the same batch size and learning rate. That is issue #33 through a
+    # different door.
+    assert seen["max_epochs"] == run_arms.MAX_EPOCHS
+
+
+def test_rung_three_trains_with_the_same_optimiser(monkeypatch) -> None:
+    """Both rungs must reach their trainer with identical optimiser settings.
+
+    Equal batch sizes are what make the shared epoch-counted patience a fair
+    stopping rule: an epoch is then the same number of gradient updates on both,
+    which is the property issue #33 exists to restore.
+    """
+    monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
+    monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
+    monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
+    seen = capture_optimiser(monkeypatch, "train_lora")
+    monkeypatch.setattr(
+        run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
+    )
+    monkeypatch.setattr(run_arms, "build_head", lambda *a, **k: None)
+    monkeypatch.setattr(
+        run_arms, "predict_lora", lambda *a, **k: np.arange(3, dtype=float)
+    )
+    frame, splits, rows = tiny_assay_and_splits()
+
+    run_arms.run_lora(frame, splits, rows, "mean", "M" * 20, "ckpt", 0)
+
+    assert seen["lr"] == run_arms.SUPERVISED_LEARNING_RATE
+    assert seen["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
+    # The third leg. Patience counts epochs and MAX_EPOCHS caps how many exist,
+    # so a rung-specific ceiling hands one rung a larger budget while both still
+    # read the same batch size and learning rate. That is issue #33 through a
+    # different door.
+    assert seen["max_epochs"] == run_arms.MAX_EPOCHS
+
+
+def test_no_rung_specific_optimiser_constants_survive() -> None:
+    """The old names must be gone, not merely unused.
+
+    A leftover LEARNING_RATE or LORA_BATCH_SIZE is an invitation to wire one rung
+    back to it, which is exactly how the rungs diverged the first time.
+    """
+    for name in ("LEARNING_RATE", "LORA_LEARNING_RATE", "LORA_BATCH_SIZE"):
+        assert not hasattr(run_arms, name), (
+            f"{name} still exists; it is a per-rung optimiser setting and the "
+            "supervised rungs now share SUPERVISED_LEARNING_RATE and "
+            "SUPERVISED_BATCH_SIZE"
+        )
+
+
+@pytest.mark.parametrize("rung", ["frozen", "lora"])
+def test_the_manifest_records_the_supervised_optimiser(monkeypatch, rung: str) -> None:
+    """`train` records batch_size in its history, and nothing forwarded it.
+
+    The field was justified as the only way a manifest reader recovers the
+    value, and that was false: neither runner puts it in the returned row and no
+    run.record picked it up. Recorded for both supervised rungs, because the
+    reason to record it at all is that the two are comparable only while they
+    agree.
+    """
+    # Sentinels, because comparing a field to the constant it was built from is
+    # satisfied by any constant. Four in this module equal 8.
+    monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
+    monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
+    monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
+
+    supervised = run_arms.configuration_records(rung)["supervised"]
+
+    assert supervised["batch_size"] == 7
+    assert supervised["learning_rate"] == 5e-5
+    assert supervised["max_epochs"] == 3
+    assert supervised["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
+    assert supervised["learning_rate"] == run_arms.SUPERVISED_LEARNING_RATE
+    assert supervised["max_epochs"] == run_arms.MAX_EPOCHS
+
+
+def test_zero_shot_records_no_optimiser() -> None:
+    """Rung 1 trains nothing, so an optimiser block would be a lie."""
+    assert "supervised" not in run_arms.configuration_records("zero_shot")
+
+
+def test_the_shared_batch_size_matches_the_committed_results() -> None:
+    """Provenance, the same argument that pins Project 1 at 256.
+
+    `frozen.csv` was regenerated at this batch size. The rung tests either side
+    assert the two rungs agree, which stays green if both move together, and
+    both moving together silently invalidates the committed numbers.
+    """
+    assert run_arms.SUPERVISED_BATCH_SIZE == 8
+    assert run_arms.SUPERVISED_LEARNING_RATE == 1e-4
+
+
+def test_scoring_batch_size_is_not_the_training_one(monkeypatch) -> None:
+    """Both constants are 8, so rewiring this line is invisible without capture.
+
+    `predict_lora`'s batching is a memory knob and cannot change a result, which
+    is why it was split from the optimiser. Nothing enforced the split: the only
+    test reaching that call stubs it with a lambda that discards its arguments.
+    Same drift class issue #33 removed from the training path, one line below it.
+    """
+    seen: dict = {}
+
+    def capture(encoder, head, split, readout, batch_size):  # type: ignore[no-untyped-def]
+        seen["batch_size"] = batch_size
+        return np.arange(3, dtype=float)
+
+    # Moved off the shared value on purpose. Both constants are 8 in the repo, so
+    # asserting against LORA_SCORING_BATCH_SIZE as it stands would pass even if
+    # the call read SUPERVISED_BATCH_SIZE instead. Verified: without this line
+    # the rewire goes undetected.
+    monkeypatch.setattr(run_arms, "LORA_SCORING_BATCH_SIZE", 3)
+    trained = capture_optimiser(monkeypatch, "train_lora")
+    monkeypatch.setattr(
+        run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
+    )
+    monkeypatch.setattr(run_arms, "build_head", lambda *a, **k: None)
+    monkeypatch.setattr(run_arms, "predict_lora", capture)
+    frame, splits, rows = tiny_assay_and_splits()
+
+    run_arms.run_lora(frame, splits, rows, "mean", "M" * 20, "ckpt", 0)
+
+    assert seen["batch_size"] == 3, (
+        "scoring used the training batch size; the two are separate because "
+        "scoring cannot change a result and the optimiser must not drift"
+    )
+    # And the mirror. Both constants are 8 in the repo, so training reading the
+    # scoring one is equally invisible, and the comment above
+    # LORA_SCORING_BATCH_SIZE explicitly invites retuning it as a memory knob.
+    # That retune would silently move rung 3's optimiser and reopen issue #33.
+    assert trained["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE, (
+        "training read the scoring batch size; retuning a memory knob would "
+        "then change the optimiser and reopen the confound issue #33 closed"
+    )
+
+
+def test_both_supervised_rungs_receive_identical_optimiser_kwargs(monkeypatch) -> None:
+    """Equality of the whole kwargs dict, not a list of settings I remembered.
+
+    Every other guard here names a setting, so each new one is a fresh chance to
+    add it to one rung and not the other. `max_epochs` was exactly that: shared
+    batch size and learning rate, a rung-specific epoch ceiling, and issue #33
+    reopened with every test green. Comparing the dicts closes the class.
+    """
+    monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
+    monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
+    monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
+    frame, splits, rows = tiny_assay_and_splits()
+
+    frozen_seen = capture_optimiser(monkeypatch, "train")
+    monkeypatch.setattr(
+        run_arms, "assay_features", lambda *a, **k: np.zeros((9, 4), dtype=np.float32)
+    )
+    monkeypatch.setattr(run_arms, "predict", lambda *a, **k: np.arange(3, dtype=float))
+    run_arms.run_frozen(
+        frame, "ASSAY_A", splits, rows, "mean", "M" * 20, "ckpt", Path("/tmp")
+    )
+
+    lora_seen = capture_optimiser(monkeypatch, "train_lora")
+    monkeypatch.setattr(
+        run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
+    )
+    monkeypatch.setattr(run_arms, "build_head", lambda *a, **k: None)
+    monkeypatch.setattr(
+        run_arms, "predict_lora", lambda *a, **k: np.arange(3, dtype=float)
+    )
+    run_arms.run_lora(frame, splits, rows, "mean", "M" * 20, "ckpt", 0)
+
+    # Everything except what a rung is entitled to differ on. Listing what must
+    # match is an open set that grows with every knob anyone adds, and forgetting
+    # to extend it is silent; listing what may differ is closed, and extending it
+    # is a deliberate act with a reviewable diff. MISSING makes a key present on
+    # one rung and absent from the other fail too.
+    shared = (set(frozen_seen) | set(lora_seen)) - RUNG_SPECIFIC_KWARGS
+    assert shared, "captured no shared kwargs at all, so this asserts nothing"
+
+    assert {key: frozen_seen.get(key, MISSING) for key in shared} == {
+        key: lora_seen.get(key, MISSING) for key in shared
+    }, (
+        "the two supervised rungs were handed different optimiser settings; if "
+        "the differing key is legitimately rung-specific, add it to "
+        "RUNG_SPECIFIC_KWARGS rather than removing this assertion"
+    )

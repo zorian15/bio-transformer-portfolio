@@ -33,8 +33,12 @@ Task = Literal["regression", "classification"]
 HEAD_HIDDEN_DIM = 256
 HEAD_DROPOUT = 0.1
 
-# Minibatch size for head training. The data is small enough that this affects
-# optimization noise rather than memory.
+# Project 1's minibatch size for head training, kept as a named constant so that
+# call site can pass it explicitly and stay bit-for-bit. It is deliberately no
+# longer a default inside `train`: batching at a module constant while
+# `train_lora` took its batch size as an argument meant an epoch was a different
+# number of gradient updates on the two rungs, and early-stopping patience is
+# counted in epochs. See issue #33.
 BATCH_SIZE = 256
 
 # Stop when validation loss has not improved for this many epochs. Best weights
@@ -212,6 +216,7 @@ def train(
     mode: FinetuneMode,
     max_epochs: int,
     lr: float,
+    batch_size: int,
 ) -> tuple[Any, dict]:
     """Train under the chosen mode and return the fitted model plus history.
 
@@ -226,6 +231,11 @@ def train(
         mode: which regime to train under.
         max_epochs: upper bound; early stopping usually ends the run sooner.
         lr: Adam learning rate.
+        batch_size: samples per gradient update. No default: patience is counted
+            in epochs, so two callers batching differently get different
+            optimisation budgets from the same stopping rule, and the difference
+            is invisible in the history. A ladder comparing this against
+            `train_lora` has to set both from one place.
 
     Returns:
         (model, history). The returned model carries the weights from the best
@@ -251,6 +261,7 @@ def train(
 
     assert max_epochs > 0, f"max_epochs must be positive, got {max_epochs}"
     assert lr > 0, f"lr must be positive, got {lr}"
+    assert batch_size > 0, f"batch_size must be positive, got {batch_size}"
     task = getattr(model, "task", None)
     assert task in ("regression", "classification"), (
         "model has no usable `task` attribute; build it with build_head so the "
@@ -267,6 +278,9 @@ def train(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     history = _initial_history(mode, len(x_train), len(x_val))
+    # Recorded because it is now a caller's choice rather than a constant, and it
+    # changes how many updates an epoch is worth.
+    history["batch_size"] = batch_size
     tracker = _BestEpochTracker(
         lambda: _clone_state(model.state_dict()),
         model.load_state_dict,
@@ -277,8 +291,8 @@ def train(
         permutation = torch.randperm(len(x_train), device=device)
         epoch_loss = 0.0
 
-        for start in range(0, len(x_train), BATCH_SIZE):
-            batch = permutation[start : start + BATCH_SIZE]
+        for start in range(0, len(x_train), batch_size):
+            batch = permutation[start : start + batch_size]
             optimizer.zero_grad(set_to_none=True)
             loss = loss_fn(model(x_train[batch]), y_train[batch])
             loss.backward()
@@ -681,6 +695,11 @@ def train_lora(
     history.update(
         {
             "readout": readout,
+            # Recorded on both rungs, not just this one: the two histories are
+            # read side by side when the ladder's delta is computed, and a field
+            # present in one schema and absent from the other is a trap for
+            # whatever reads them next.
+            "batch_size": batch_size,
             # One nested block rather than three loose keys, so a manifest
             # reader finds the adapter configuration in one place and a SLURM
             # array can round-trip the same object it was given.

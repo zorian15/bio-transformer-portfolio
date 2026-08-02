@@ -493,6 +493,7 @@ def test_train_points_at_train_lora_rather_than_raising_blindly() -> None:
             "lora",
             max_epochs=1,
             lr=1e-3,
+            batch_size=training.BATCH_SIZE,
         )
 
 
@@ -715,3 +716,72 @@ def test_predict_rejects_an_out_of_range_position() -> None:
     )
     with pytest.raises(AssertionError):
         training.predict_lora(encoder, head, broken, "at_position", batch_size=4)
+
+
+def test_both_rungs_report_batch_size_in_their_history() -> None:
+    """The two histories are read side by side to compute the ladder's delta.
+
+    A field in one schema and not the other is a trap for whatever reads them
+    next, and batch size is the setting issue #33 exists to keep equal.
+    """
+    # A batch size distinct from every other 8 in this file's fixtures: the spec
+    # alpha is 8 and the validation split is 8 rows, so asserting == 8 would pass
+    # against a history that reported either of those instead.
+    _, _, lora_history = run(batch_size=5)
+    head = training.build_head(4, 1, "regression")
+    features = np.zeros((8, 4), dtype=np.float32)
+    targets = np.arange(8, dtype=np.float32)
+    _, frozen_history = training.train(
+        head,
+        (features, targets),
+        (features, targets),
+        mode="linear_probe",
+        max_epochs=2,
+        lr=1e-3,
+        batch_size=4,
+    )
+
+    assert lora_history["batch_size"] == 5
+    assert frozen_history["batch_size"] == 4
+
+
+def lora_batch_sizes_seen(batch_size: int) -> list[int]:
+    """Rows in each training forward pass of `train_lora`, from the head itself."""
+    encoder = tiny_bundle()
+    head = training.build_head(WIDTH, 1, "regression")
+    seen: list[int] = []
+    original = head.forward
+
+    def recording(inputs):  # type: ignore[no-untyped-def]
+        # Training passes only; validation routes through predict_lora under
+        # eval(), and counting it would add the whole val split every epoch.
+        if head.training:
+            seen.append(int(inputs.shape[0]))
+        return original(inputs)
+
+    head.forward = recording  # type: ignore[method-assign]
+    training.train_lora(
+        encoder=encoder,
+        head=head,
+        train_data=toy_split(24, seed=0),
+        val_data=toy_split(8, seed=1),
+        readout="at_position",
+        max_epochs=1,
+        lr=1e-2,
+        lora=training.LoraSpec(rank=4, alpha=8, target_modules=("q_proj",)),
+        batch_size=batch_size,
+        seed=0,
+    )
+    return seen
+
+
+def test_lora_updates_see_exactly_the_batch_size() -> None:
+    """The mirror of `train`'s guard, for the trainer that was left unchecked.
+
+    Issue #33 pinned what both rungs *pass*; this pins that this trainer honours
+    it. Halving the stride here would double rung 3's updates per epoch while
+    patience still counted epochs and the manifest still reported the argument,
+    which is the confound reintroduced with the record asserting it did not
+    happen. Twenty-four rows at six is four updates of six.
+    """
+    assert lora_batch_sizes_seen(6) == [6] * 4

@@ -1,7 +1,7 @@
 # Results
 
-**Status:** rungs 1 and 2 complete, rung 3 pending. This page is updated as
-they land, and says plainly which numbers exist.
+**Status:** rungs 1, 2 and 3 complete. This page is updated as they land, and
+says plainly which numbers exist.
 
 See [Method](method.md) for the design and the
 [appendix](../appendix.md) for the machinery it assumes.
@@ -175,27 +175,45 @@ everywhere, between 11 and 110 epochs against a 200 cap.
 
 ### The naive comparison, and why it is not the answer
 
-Against rung 2 as published, LoRA gains **+0.0399 Spearman** on average
-(Wilcoxon p=8.6e-5, 69% of configurations). Taken at face value that is a
-positive result for fine-tuning.
+When rungs 2 and 3 were first compared, LoRA gained **+0.0399 Spearman**
+(p=8.6e-5, 69% of configurations). That number was not attributable to
+fine-tuning: rung 2 trained at batch 256 / lr 1e-3 and rung 3 at batch 8 /
+lr 1e-4, and patience is counted in *epochs*, so an epoch was 5x (N=32) to 25x
+(N=2048) more gradient updates on rung 3. 14.8% of rung-2 runs stopped at or
+before epoch 2. The rungs shared a stopping *constant*, not a stopping *rule*.
 
-It is not attributable to fine-tuning, for a reason that is a flaw in the ladder
-rather than in the data. Rung 2 trains at batch 256 and lr 1e-3; rung 3 at batch
-8 and lr 1e-4. Both stop after ten epochs without improvement, but an *epoch* is
-a different number of gradient updates on each rung:
+Both supervised rungs now read one batch size and one learning rate (issue #33),
+and rung 2 has been re-run. The delta shrank by about a quarter:
 
-| N | rung 2 updates | rung 3 updates | ratio |
-|---:|---:|---:|---:|
-| 32 | 21 | 104 | 5x |
-| 128 | 22 | 352 | 16x |
-| 512 | 52 | 1,216 | 23x |
-| 2,048 | 184 | 4,608 | 25x |
+| | mean Spearman |
+|---|---:|
+| rung 2, old optimiser | 0.2236 |
+| **rung 2, shared optimiser** | **0.2348** |
+| ridge, converged floor | 0.2619 |
+| LoRA | 0.2634 |
 
-14.8% of rung-2 runs select their best epoch at or before epoch 2, which is
-essentially at initialisation. The two rungs share the stopping *constant* and
-not the stopping *rule*, so the delta mixes "adapting the encoder helped" with
-"rung 3 optimised for longer". Whatever else follows, that has to be fixed
-before the ladder can attribute anything to adaptation.
+| paired contrast | mean | p |
+|---|---:|---:|
+| LoRA − rung 2, old optimiser | +0.0399 | 8.6e-5 |
+| **LoRA − rung 2, shared optimiser** | **+0.0287** | 0.002 |
+| rung 2, shared optimiser − ridge | −0.0271 | 0.107 |
+
+**Eleven rung-2 runs are lower bounds.** With the smaller batch, 11 of 324
+rung-2 configurations reach the 200-epoch cap while still improving, with best
+epochs of 189 to 199; nine of them are the `mean` readout. No rung-3 run hits the
+cap. Those eleven numbers therefore understate rung 2 and would, if anything,
+inflate the delta. They do not: excluding them moves it from +0.0287 to +0.0292
+(p=0.0007). Worth stating because the truncation lands exactly on the readout
+where the head is already weakest.
+
+**The confound is smaller and not gone.** Rung 2 is still 0.027 below a ridge
+regression on the identical features, so it is still not converged and the
+residual delta cannot be cleanly attributed either. The reason has changed,
+though: it is no longer an optimisation-budget difference. Broken out by readout,
+ridge beats the rung-2 head by +0.104 on `mean`, +0.009 on `at_position`, and
+loses by 0.031 on `difference_at_position`. That is one badly-conditioned readout
+rather than a general under-fit, and the rung-2 head carries no explicit weight
+decay. Tracked as issue #35.
 
 ### A converged frozen baseline recovers the entire gain
 
@@ -212,7 +230,8 @@ the frozen representation, fit properly?"
 | ridge − rung 2 as published | +0.0383 | 0.017 | 57% |
 | **LoRA − ridge** | **+0.0015** | **0.28** | 59% |
 
-Mean Spearman across all 324: rung 2 **0.224**, ridge **0.262**, LoRA **0.263**.
+Mean Spearman across all 324: rung 2 (as published) **0.224**, ridge **0.262**,
+LoRA **0.263**.
 
 **Against a properly-fit frozen representation, LoRA buys nothing on average.**
 The apparent +0.040 is the size of rung 2's under-fit, not the value of
@@ -223,11 +242,16 @@ adaptation. That is the headline of this rung, and it is a negative result.
 LoRA beats ridge on exactly one scheme, and it is the one that lets the model see
 the test positions during training:
 
-| scheme | LoRA − ridge | p |
-|---|---:|---:|
-| `fold_random_5` | **+0.0195** | **0.032** |
-| `fold_contiguous_5` | +0.0071 | 0.96 |
-| `fold_modulo_5` | −0.0219 | 0.86 |
+| scheme | LoRA − ridge | p | LoRA − rung 2 (shared optimiser) | p |
+|---|---:|---:|---:|---:|
+| `fold_random_5` | **+0.0195** | **0.032** | **+0.0557** | **<0.001** |
+| `fold_contiguous_5` | +0.0071 | 0.96 | +0.0148 | 0.30 |
+| `fold_modulo_5` | −0.0219 | 0.86 | +0.0154 | 0.50 |
+
+Both columns say the same thing: whatever advantage adaptation has is confined to
+the split that lets it see the test positions. Against the trained head the
+overall delta is +0.0287 and significant, but scheme by scheme only `random`
+survives.
 
 The paired scheme contrast `random − modulo` is +0.049 (p=0.0022). Under
 `fold_random_5`, folds share almost every residue position, and predicting each
@@ -259,20 +283,27 @@ schemes on `A4GRB6_PSEAI_Chen_2020`. That bounds how much any cross-scheme
 comparison can mean.
 
 **The readout ordering depends on the baseline.** Against rung 2 as published,
-the `mean` readout appears to benefit most from adaptation (+0.080). Against
+the `mean` readout appeared to benefit most from adaptation (+0.080). Against
 ridge it is the worst (−0.051), while `difference_at_position` is the best
-(+0.036, p<0.001). The `mean` readout is where rung 2 is most under-fit, not
-where LoRA helps: a mean-pooled 480-dimensional vector over a 300-residue protein
-differing at one position is badly conditioned, and a dozen full-batch Adam steps
-do not resolve it.
+(+0.036, p<0.001). Rung 2 has since been re-run with the shared optimiser (see
+above), and the ordering does not change: ridge still beats the rung-2 head by
+the most on `mean` (+0.104) and the least on `difference_at_position`, where the
+head wins (−0.031). The `mean` readout is where the rung-2 head is worst
+conditioned, not where LoRA helps: a mean-pooled 480-dimensional vector over a
+300-residue protein differing at one position is badly conditioned, and dropout
+and early stopping alone do not resolve it without weight decay, tracked as
+issue #35.
 
 ### What this rung is waiting on
 
-Rung 2 needs re-running with rung 3's optimiser, or patience redefined in
-gradient steps rather than epochs, before any delta here is attributable to
-adaptation. `frozen_ridge.csv` stays as a permanent sanity floor: it costs
-seconds once the embeddings are cached, and it is the check that catches this
-class of failure.
+Rung 2 has been re-run with rung 3's optimiser (issue #33), so an epoch-count
+difference can no longer buy the two rungs different optimisation budgets. The
+delta that survives is smaller and no longer attributable to that confound.
+What is left is a regularisation gap between the rung-2 head and a converged
+ridge fit, concentrated in the `mean` readout, tracked as issue #35.
+`frozen_ridge.csv` stays as a permanent sanity floor regardless: it costs
+seconds once the embeddings are cached, and it is the check that surfaced both
+of these.
 
 ### The cost estimate was wrong, and validation was why
 

@@ -108,7 +108,13 @@ def test_train_learns_a_separable_classification_task() -> None:
 
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
     head, history = training.train(
-        head, train_data, val_data, mode="linear_probe", max_epochs=60, lr=1e-2
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=60,
+        lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
 
     predictions = training.predict(head, test_data[0])
@@ -122,7 +128,13 @@ def test_train_returns_the_documented_history_fields() -> None:
     train_data, val_data, _ = classification_split()
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
     _, history = training.train(
-        head, train_data, val_data, mode="linear_probe", max_epochs=15, lr=1e-2
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=15,
+        lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
 
     assert set(history) >= {
@@ -134,6 +146,7 @@ def test_train_returns_the_documented_history_fields() -> None:
         "best_epoch",
         "best_val_loss",
         "epochs_run",
+        "batch_size",
     }
     assert history["n_train"] == len(train_data[0])
     assert history["epochs_run"] == len(history["val_loss"])
@@ -146,7 +159,13 @@ def test_train_restores_the_best_epoch_not_the_last() -> None:
     train_data, val_data, _ = classification_split()
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
     head, history = training.train(
-        head, train_data, val_data, mode="linear_probe", max_epochs=40, lr=1e-2
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=40,
+        lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
 
     assert history["best_val_loss"] == pytest.approx(min(history["val_loss"]))
@@ -159,7 +178,13 @@ def test_train_stops_early_rather_than_running_every_epoch() -> None:
     train_data, val_data, _ = classification_split()
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
     _, history = training.train(
-        head, train_data, val_data, mode="linear_probe", max_epochs=500, lr=1e-2
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=500,
+        lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
     assert history["epochs_run"] < 500
 
@@ -266,7 +291,13 @@ def test_train_is_deterministic_for_a_fixed_seed() -> None:
         set_seed(11)
         head = training.build_head(N_FEATURES, N_CLASSES, "classification")
         head, _ = training.train(
-            head, train_data, val_data, mode="linear_probe", max_epochs=20, lr=1e-2
+            head,
+            train_data,
+            val_data,
+            mode="linear_probe",
+            max_epochs=20,
+            lr=1e-2,
+            batch_size=training.BATCH_SIZE,
         )
         return training.predict(head, test_data[0])
 
@@ -288,6 +319,7 @@ def test_train_handles_a_regression_head() -> None:
         mode="linear_probe",
         max_epochs=80,
         lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
 
     predictions = training.predict(head, x[80:])
@@ -302,7 +334,15 @@ def test_train_refuses_unimplemented_modes(mode: training.FinetuneMode) -> None:
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
 
     with pytest.raises(NotImplementedError, match=mode):
-        training.train(head, train_data, val_data, mode=mode, max_epochs=1, lr=1e-3)
+        training.train(
+            head,
+            train_data,
+            val_data,
+            mode=mode,
+            max_epochs=1,
+            lr=1e-3,
+            batch_size=training.BATCH_SIZE,
+        )
 
 
 def test_train_rejects_a_head_without_a_task() -> None:
@@ -316,7 +356,13 @@ def test_train_rejects_a_head_without_a_task() -> None:
 
     with pytest.raises(AssertionError, match="task"):
         training.train(
-            bare, train_data, val_data, mode="linear_probe", max_epochs=1, lr=1e-3
+            bare,
+            train_data,
+            val_data,
+            mode="linear_probe",
+            max_epochs=1,
+            lr=1e-3,
+            batch_size=training.BATCH_SIZE,
         )
     assert isinstance(bare, torch.nn.Module)
 
@@ -336,6 +382,7 @@ def test_train_rejects_invalid_hyperparameters(max_epochs: int, lr: float) -> No
             mode="linear_probe",
             max_epochs=max_epochs,
             lr=lr,
+            batch_size=training.BATCH_SIZE,
         )
 
 
@@ -351,4 +398,157 @@ def test_train_rejects_mismatched_features_and_labels() -> None:
             mode="linear_probe",
             max_epochs=1,
             lr=1e-3,
+            batch_size=training.BATCH_SIZE,
         )
+
+
+# --- The optimiser is a parameter, not a module constant ------------------------
+#
+# `train` batched at a module-level 256 while `train_lora` took its batch size as
+# an argument, and both counted early-stopping patience in epochs. An epoch was
+# therefore 5x to 25x more gradient updates on the LoRA rung, so the ladder's
+# rung-2-to-rung-3 delta mixed "adapting the encoder helped" with "rung 3
+# optimised for longer". Issue #33.
+
+
+def test_train_requires_an_explicit_batch_size() -> None:
+    """No default, so a caller cannot inherit a batch size it did not choose.
+
+    That inheritance is what let the two supervised rungs differ in their
+    optimisation budget while appearing to share a stopping rule.
+    """
+    parameter = inspect.signature(training.train).parameters["batch_size"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_train_rejects_a_nonpositive_batch_size() -> None:
+    with pytest.raises(AssertionError, match="batch_size must be positive"):
+        train_data, val_data, _ = classification_split()
+        head = training.build_head(N_FEATURES, N_CLASSES, "classification")
+        training.train(
+            head,
+            train_data,
+            val_data,
+            mode="linear_probe",
+            max_epochs=1,
+            lr=1e-3,
+            batch_size=0,
+        )
+
+
+def test_history_records_the_batch_size_it_trained_at() -> None:
+    """A manifest reader has no other way to recover it, and it changes results."""
+    train_data, val_data, _ = classification_split()
+    head = training.build_head(N_FEATURES, N_CLASSES, "classification")
+
+    _, history = training.train(
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=2,
+        lr=1e-3,
+        batch_size=32,
+    )
+
+    assert history["batch_size"] == 32
+
+
+def updates_taken(batch_size: int) -> int:
+    """Gradient updates `train` performs over a fixed number of epochs."""
+    import torch
+
+    train_data, val_data, _ = classification_split()
+    head = training.build_head(N_FEATURES, N_CLASSES, "classification")
+    seen = 0
+    original = torch.optim.Adam.step
+
+    def counting_step(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal seen
+        seen += 1
+        return original(self, *args, **kwargs)
+
+    torch.optim.Adam.step = counting_step  # type: ignore[method-assign]
+    try:
+        set_seed(0)
+        training.train(
+            head,
+            train_data,
+            val_data,
+            mode="linear_probe",
+            max_epochs=3,
+            lr=1e-3,
+            batch_size=batch_size,
+        )
+    finally:
+        torch.optim.Adam.step = original  # type: ignore[method-assign]
+    return seen
+
+
+def test_batch_size_actually_sets_the_number_of_updates() -> None:
+    """The property the whole issue rests on, counted rather than assumed.
+
+    The training split is 180 rows. At batch 256 that is one update per epoch,
+    which is why every other test in this file, all of which pass 256, would
+    still pass against a `train` that ignored the parameter entirely and used the
+    old module constant. Twenty rows per batch must give nine.
+    """
+    assert updates_taken(256) == 3, "180 rows at batch 256 is one update per epoch"
+    assert updates_taken(20) == 27, "180 rows at batch 20 is nine updates per epoch"
+
+
+def batch_sizes_seen(batch_size: int) -> list[int]:
+    """Rows in each training forward pass, recorded from the head itself."""
+    train_data, val_data, _ = classification_split()
+    head = training.build_head(N_FEATURES, N_CLASSES, "classification")
+    seen: list[int] = []
+    original = head.forward
+
+    def recording(inputs):  # type: ignore[no-untyped-def]
+        # Training passes only. Validation runs under eval(), and counting it
+        # would add the whole val split to every epoch.
+        if head.training:
+            seen.append(int(inputs.shape[0]))
+        return original(inputs)
+
+    head.forward = recording  # type: ignore[method-assign]
+    set_seed(0)
+    training.train(
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=1,
+        lr=1e-3,
+        batch_size=batch_size,
+    )
+    return seen
+
+
+def test_each_update_sees_exactly_batch_size_samples() -> None:
+    """The slice width, which the update count cannot see.
+
+    The minibatch loop has two halves: the stride it advances by and the width
+    it slices. `test_batch_size_actually_sets_the_number_of_updates` pins the
+    stride, and a half-finished rename that left the slice reading the old
+    module constant would keep the update count exactly right while every batch
+    saw a different, overlapping, shrinking window of rows. Nine updates of
+    twenty, not nine updates of whatever.
+    """
+    assert batch_sizes_seen(20) == [20] * 9
+
+
+def test_the_tracker_does_not_let_a_caller_choose_its_patience() -> None:
+    """`_BestEpochTracker`'s docstring promises this; nothing tested it.
+
+    Patience is read from the module constant so the two supervised rungs cannot
+    pass different values. A `patience` parameter would reopen issue #33 through
+    its original door, and being underscore-private it also slips past the
+    no-default-arguments convention check.
+    """
+    parameters = inspect.signature(training._BestEpochTracker.__init__).parameters
+
+    assert "patience" not in parameters, (
+        "the tracker accepts a patience argument, so two call sites can be given "
+        "different stopping rules while appearing to share an implementation"
+    )
