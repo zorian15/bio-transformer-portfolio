@@ -1,8 +1,13 @@
 # bio-transformer-portfolio
 
+[![docs](https://github.com/zorian15/bio-transformer-portfolio/actions/workflows/docs.yml/badge.svg)](https://zorian15.github.io/bio-transformer-portfolio/)
+[![tests](https://github.com/zorian15/bio-transformer-portfolio/actions/workflows/tests.yml/badge.svg)](https://github.com/zorian15/bio-transformer-portfolio/actions/workflows/tests.yml)
+
 A portfolio of three small, openly-released machine-learning experiments at the intersection of transformers and biology. The aim is hands-on transformer work with careful, leakage-aware evaluation, released as public code and model weights.
 
 Each project stands alone but shares one infrastructure package (`biotp`) and follows the same open-science release checklist. See `PLANNING.md` for the full plan and rationale.
+
+**Documentation: <https://zorian15.github.io/bio-transformer-portfolio/>**, built from `docs/` on every push to `main`. Each project has an introduction, its data provenance, the method, the results, and a running experiment log; shared infrastructure has pages on run logging and the embedding cache.
 
 ## The three projects
 
