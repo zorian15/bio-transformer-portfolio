@@ -132,12 +132,28 @@ leaves every score finite and plausible. The reference file carries `target_seq`
 so the sequence is taken from there and never fetched separately, and the
 agreement is asserted at preparation time for every variant.
 
-**One stopping rule for both supervised rungs.** Rungs 2 and 3 select the best
-epoch and stop early through the same implementation, not two copies of it. The
-ladder's whole claim is that consecutive rungs differ in exactly one respect, so a
-patience or improvement test changed in one loop and not the other would move the
-measured rung 2 to rung 3 delta while every test still passed and every number
-still looked reasonable.
+**One optimiser for both supervised rungs.** Rungs 2 and 3 select the best epoch
+and stop early through the same implementation, and they now read the same batch
+size and learning rate from one place. The ladder's whole claim is that
+consecutive rungs differ in exactly one respect, so a patience or improvement
+test changed in one loop and not the other would move the measured rung 2 to
+rung 3 delta while every test still passed and every number still looked
+reasonable.
+
+Sharing the implementation was not sufficient on its own, which is worth
+recording because it looked sufficient. Rung 2 batched at 256 with lr 1e-3 while
+rung 3 used 8 and 1e-4, and patience is counted in *epochs*: an epoch was 5x to
+25x more gradient updates on rung 3, so the two rungs shared a stopping constant
+and not a stopping rule. Removing that difference cut the measured delta by about
+a quarter. See issue #33 and the 2026-08-02 entries in the
+[experiment log](decision-log.md).
+
+**What still differs, stated plainly.** Rung 2 reads cached embeddings while
+rung 3 re-encodes every step, which is inherent to adapting the encoder and
+cannot be removed. And the rung-2 head carries no explicit weight decay, only
+dropout and early stopping, which leaves it below a ridge regression on the same
+features for the mean readout specifically. So "differ in exactly one respect" is
+now true of the optimiser and not yet true of the regularisation.
 
 **Subsampling.** Training draws are seeded from a CRC of the configuration rather
 than Python's `hash`, which is randomized per process. Seeding from `hash` would

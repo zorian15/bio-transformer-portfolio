@@ -117,11 +117,26 @@ SEEDS = (0, 1, 2)
 # device utilisation, so these are memory knobs; see the 2026-07-30 log entry.
 EMBED_BATCH_SIZE = 8
 ZERO_SHOT_BATCH_SIZE = 8
-LORA_BATCH_SIZE = 8
+# Scoring only. predict_lora's batching cannot change a result, so it is free to
+# differ from the training batch size and is kept separate to say so.
+LORA_SCORING_BATCH_SIZE = 8
 
 MAX_EPOCHS = 200
-LEARNING_RATE = 1e-3
-LORA_LEARNING_RATE = 1e-4
+
+# One optimiser for both supervised rungs, read by run_frozen and run_lora alike.
+# They used to differ: rung 2 batched at 256 with lr 1e-3, rung 3 at 8 with 1e-4.
+# Early-stopping patience is counted in epochs, so an epoch was 5x (N=32) to 25x
+# (N=2048) more gradient updates on rung 3, and the rung-2-to-rung-3 delta mixed
+# "adapting the encoder helped" with "rung 3 optimised for longer". The ladder's
+# whole claim is that consecutive rungs differ in exactly one respect, and with
+# two optimisers it was false. See issue #33.
+#
+# Rung 3's values win because rung 3 is the constrained one: its batch size is a
+# memory limit set by the attention matrix, while rung 2 runs on cached vectors
+# and can use any batch size. tests/test_dms_run_arms.py asserts both rungs read
+# these, so the agreement is a property rather than a coincidence.
+SUPERVISED_BATCH_SIZE = 8
+SUPERVISED_LEARNING_RATE = 1e-4
 
 # The adapter configuration every rung-3 run uses. One object rather than three
 # constants, so the SLURM array can carry it per job and the run manifest records
@@ -392,7 +407,8 @@ def run_frozen(
         (features["val"], labels["val"]),
         mode="linear_probe",
         max_epochs=MAX_EPOCHS,
-        lr=LEARNING_RATE,
+        lr=SUPERVISED_LEARNING_RATE,
+        batch_size=SUPERVISED_BATCH_SIZE,
     )
     predictions = predict(head, features["test"])
     return {
@@ -424,14 +440,14 @@ def run_lora(
         val_data=variant_split(assay, splits.val, readout, reference),
         readout=readout,  # type: ignore[arg-type]
         max_epochs=MAX_EPOCHS,
-        lr=LORA_LEARNING_RATE,
-        batch_size=LORA_BATCH_SIZE,
+        lr=SUPERVISED_LEARNING_RATE,
+        batch_size=SUPERVISED_BATCH_SIZE,
         lora=LORA_SPEC,
         seed=seed,
     )
     test = variant_split(assay, splits.test, readout, reference)
     predictions = predict_lora(
-        encoder, head, test, readout, LORA_BATCH_SIZE  # type: ignore[arg-type]
+        encoder, head, test, readout, LORA_SCORING_BATCH_SIZE  # type: ignore[arg-type]
     )
     return {
         "spearman": spearman(test.targets.tolist(), predictions.tolist()),

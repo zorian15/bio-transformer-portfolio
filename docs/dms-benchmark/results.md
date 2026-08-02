@@ -175,27 +175,37 @@ everywhere, between 11 and 110 epochs against a 200 cap.
 
 ### The naive comparison, and why it is not the answer
 
-Against rung 2 as published, LoRA gains **+0.0399 Spearman** on average
-(Wilcoxon p=8.6e-5, 69% of configurations). Taken at face value that is a
-positive result for fine-tuning.
+When rungs 2 and 3 were first compared, LoRA gained **+0.0399 Spearman**
+(p=8.6e-5, 69% of configurations). That number was not attributable to
+fine-tuning: rung 2 trained at batch 256 / lr 1e-3 and rung 3 at batch 8 /
+lr 1e-4, and patience is counted in *epochs*, so an epoch was 5x (N=32) to 25x
+(N=2048) more gradient updates on rung 3. 14.8% of rung-2 runs stopped at or
+before epoch 2. The rungs shared a stopping *constant*, not a stopping *rule*.
 
-It is not attributable to fine-tuning, for a reason that is a flaw in the ladder
-rather than in the data. Rung 2 trains at batch 256 and lr 1e-3; rung 3 at batch
-8 and lr 1e-4. Both stop after ten epochs without improvement, but an *epoch* is
-a different number of gradient updates on each rung:
+Both supervised rungs now read one batch size and one learning rate (issue #33),
+and rung 2 has been re-run. The delta shrank by about a quarter:
 
-| N | rung 2 updates | rung 3 updates | ratio |
-|---:|---:|---:|---:|
-| 32 | 21 | 104 | 5x |
-| 128 | 22 | 352 | 16x |
-| 512 | 52 | 1,216 | 23x |
-| 2,048 | 184 | 4,608 | 25x |
+| | mean Spearman |
+|---|---:|
+| rung 2, old optimiser | 0.2236 |
+| **rung 2, shared optimiser** | **0.2348** |
+| ridge, converged floor | 0.2619 |
+| LoRA | 0.2634 |
 
-14.8% of rung-2 runs select their best epoch at or before epoch 2, which is
-essentially at initialisation. The two rungs share the stopping *constant* and
-not the stopping *rule*, so the delta mixes "adapting the encoder helped" with
-"rung 3 optimised for longer". Whatever else follows, that has to be fixed
-before the ladder can attribute anything to adaptation.
+| paired contrast | mean | p |
+|---|---:|---:|
+| LoRA − rung 2, old optimiser | +0.0399 | 8.6e-5 |
+| **LoRA − rung 2, shared optimiser** | **+0.0287** | 0.002 |
+| rung 2, shared optimiser − ridge | −0.0271 | 0.107 |
+
+**The confound is smaller and not gone.** Rung 2 is still 0.027 below a ridge
+regression on the identical features, so it is still not converged and the
+residual delta cannot be cleanly attributed either. The reason has changed,
+though: it is no longer an optimisation-budget difference. Broken out by readout,
+ridge beats the rung-2 head by +0.104 on `mean`, +0.009 on `at_position`, and
+loses by 0.031 on `difference_at_position`. That is one badly-conditioned readout
+rather than a general under-fit, and the rung-2 head carries no explicit weight
+decay. Tracked as issue #35.
 
 ### A converged frozen baseline recovers the entire gain
 
@@ -223,11 +233,16 @@ adaptation. That is the headline of this rung, and it is a negative result.
 LoRA beats ridge on exactly one scheme, and it is the one that lets the model see
 the test positions during training:
 
-| scheme | LoRA − ridge | p |
-|---|---:|---:|
-| `fold_random_5` | **+0.0195** | **0.032** |
-| `fold_contiguous_5` | +0.0071 | 0.96 |
-| `fold_modulo_5` | −0.0219 | 0.86 |
+| scheme | LoRA − ridge | p | LoRA − rung 2 (shared optimiser) | p |
+|---|---:|---:|---:|---:|
+| `fold_random_5` | **+0.0195** | **0.032** | **+0.0557** | **<0.001** |
+| `fold_contiguous_5` | +0.0071 | 0.96 | +0.0148 | 0.30 |
+| `fold_modulo_5` | −0.0219 | 0.86 | +0.0154 | 0.50 |
+
+Both columns say the same thing: whatever advantage adaptation has is confined to
+the split that lets it see the test positions. Against the trained head the
+overall delta is +0.0287 and significant, but scheme by scheme only `random`
+survives.
 
 The paired scheme contrast `random − modulo` is +0.049 (p=0.0022). Under
 `fold_random_5`, folds share almost every residue position, and predicting each

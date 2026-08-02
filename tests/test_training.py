@@ -108,7 +108,13 @@ def test_train_learns_a_separable_classification_task() -> None:
 
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
     head, history = training.train(
-        head, train_data, val_data, mode="linear_probe", max_epochs=60, lr=1e-2
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=60,
+        lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
 
     predictions = training.predict(head, test_data[0])
@@ -122,7 +128,13 @@ def test_train_returns_the_documented_history_fields() -> None:
     train_data, val_data, _ = classification_split()
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
     _, history = training.train(
-        head, train_data, val_data, mode="linear_probe", max_epochs=15, lr=1e-2
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=15,
+        lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
 
     assert set(history) >= {
@@ -146,7 +158,13 @@ def test_train_restores_the_best_epoch_not_the_last() -> None:
     train_data, val_data, _ = classification_split()
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
     head, history = training.train(
-        head, train_data, val_data, mode="linear_probe", max_epochs=40, lr=1e-2
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=40,
+        lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
 
     assert history["best_val_loss"] == pytest.approx(min(history["val_loss"]))
@@ -159,7 +177,13 @@ def test_train_stops_early_rather_than_running_every_epoch() -> None:
     train_data, val_data, _ = classification_split()
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
     _, history = training.train(
-        head, train_data, val_data, mode="linear_probe", max_epochs=500, lr=1e-2
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=500,
+        lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
     assert history["epochs_run"] < 500
 
@@ -266,7 +290,13 @@ def test_train_is_deterministic_for_a_fixed_seed() -> None:
         set_seed(11)
         head = training.build_head(N_FEATURES, N_CLASSES, "classification")
         head, _ = training.train(
-            head, train_data, val_data, mode="linear_probe", max_epochs=20, lr=1e-2
+            head,
+            train_data,
+            val_data,
+            mode="linear_probe",
+            max_epochs=20,
+            lr=1e-2,
+            batch_size=training.BATCH_SIZE,
         )
         return training.predict(head, test_data[0])
 
@@ -288,6 +318,7 @@ def test_train_handles_a_regression_head() -> None:
         mode="linear_probe",
         max_epochs=80,
         lr=1e-2,
+        batch_size=training.BATCH_SIZE,
     )
 
     predictions = training.predict(head, x[80:])
@@ -302,7 +333,15 @@ def test_train_refuses_unimplemented_modes(mode: training.FinetuneMode) -> None:
     head = training.build_head(N_FEATURES, N_CLASSES, "classification")
 
     with pytest.raises(NotImplementedError, match=mode):
-        training.train(head, train_data, val_data, mode=mode, max_epochs=1, lr=1e-3)
+        training.train(
+            head,
+            train_data,
+            val_data,
+            mode=mode,
+            max_epochs=1,
+            lr=1e-3,
+            batch_size=training.BATCH_SIZE,
+        )
 
 
 def test_train_rejects_a_head_without_a_task() -> None:
@@ -316,7 +355,13 @@ def test_train_rejects_a_head_without_a_task() -> None:
 
     with pytest.raises(AssertionError, match="task"):
         training.train(
-            bare, train_data, val_data, mode="linear_probe", max_epochs=1, lr=1e-3
+            bare,
+            train_data,
+            val_data,
+            mode="linear_probe",
+            max_epochs=1,
+            lr=1e-3,
+            batch_size=training.BATCH_SIZE,
         )
     assert isinstance(bare, torch.nn.Module)
 
@@ -336,6 +381,7 @@ def test_train_rejects_invalid_hyperparameters(max_epochs: int, lr: float) -> No
             mode="linear_probe",
             max_epochs=max_epochs,
             lr=lr,
+            batch_size=training.BATCH_SIZE,
         )
 
 
@@ -351,4 +397,5 @@ def test_train_rejects_mismatched_features_and_labels() -> None:
             mode="linear_probe",
             max_epochs=1,
             lr=1e-3,
+            batch_size=training.BATCH_SIZE,
         )

@@ -493,6 +493,7 @@ def test_train_points_at_train_lora_rather_than_raising_blindly() -> None:
             "lora",
             max_epochs=1,
             lr=1e-3,
+            batch_size=training.BATCH_SIZE,
         )
 
 

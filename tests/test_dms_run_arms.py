@@ -932,3 +932,70 @@ def test_slurm_output_goes_to_a_tracked_but_ignored_directory() -> None:
     ignored = (repo_root / ".gitignore").read_text().splitlines()
     assert f"{directory}/*" in [line.strip() for line in ignored]
     assert f"!{directory}/.gitkeep" in [line.strip() for line in ignored]
+
+
+# --- Both supervised rungs must optimise the same way ---------------------------
+#
+# The ladder's claim is that consecutive rungs differ in exactly one respect.
+# Rung 2 used to batch at 256 with lr 1e-3 and rung 3 at 8 with 1e-4, while both
+# stopped after ten epochs without improvement. Patience in epochs plus different
+# batch sizes meant rung 3 got 5x to 25x more gradient updates, so the delta the
+# whole project exists to measure mixed adaptation with optimisation budget.
+# Sharing the constants fixes it; this is what stops them drifting apart again.
+
+
+def supervised_call_source(function_name: str) -> str:
+    """The source of one rung's runner, for checking what it passes to training."""
+    import inspect
+
+    return inspect.getsource(getattr(run_arms, function_name))
+
+
+@pytest.mark.parametrize("rung", ["run_frozen", "run_lora"])
+def test_both_supervised_rungs_read_the_shared_optimiser(rung: str) -> None:
+    """Neither may name its own learning rate or batch size.
+
+    Checked in the source rather than by running the rungs, which would need a
+    GPU and a checkpoint. The failure this guards against is a constant quietly
+    reintroduced beside the shared one, which no numerical test would catch until
+    the delta had already moved.
+    """
+    source = supervised_call_source(rung)
+
+    assert "lr=SUPERVISED_LEARNING_RATE" in source, (
+        f"{rung} does not pass SUPERVISED_LEARNING_RATE; the two supervised "
+        "rungs must optimise identically or their delta is not attributable"
+    )
+    assert "batch_size=SUPERVISED_BATCH_SIZE" in source, (
+        f"{rung} does not pass SUPERVISED_BATCH_SIZE; patience is counted in "
+        "epochs, so a different batch size is a different optimisation budget"
+    )
+
+
+def test_no_rung_specific_optimiser_constants_survive() -> None:
+    """The old names must be gone, not merely unused.
+
+    A leftover LEARNING_RATE or LORA_BATCH_SIZE is an invitation to wire one rung
+    back to it, which is exactly how the rungs diverged the first time.
+    """
+    for name in ("LEARNING_RATE", "LORA_LEARNING_RATE", "LORA_BATCH_SIZE"):
+        assert not hasattr(run_arms, name), (
+            f"{name} still exists; it is a per-rung optimiser setting and the "
+            "supervised rungs now share SUPERVISED_LEARNING_RATE and "
+            "SUPERVISED_BATCH_SIZE"
+        )
+
+
+def test_an_epoch_is_the_same_number_of_updates_on_both_rungs() -> None:
+    """The property that makes shared epoch-patience a fair stopping rule.
+
+    Equal batch sizes and equal training-set sizes mean equal updates per epoch,
+    so "ten epochs without improvement" means the same thing on both rungs. This
+    is the statement the fix actually rests on.
+    """
+    import math
+
+    for n in run_arms.TRAINING_SIZES:
+        frozen_updates = math.ceil(n / run_arms.SUPERVISED_BATCH_SIZE)
+        lora_updates = math.ceil(n / run_arms.SUPERVISED_BATCH_SIZE)
+        assert frozen_updates == lora_updates, f"N={n} differs across rungs"

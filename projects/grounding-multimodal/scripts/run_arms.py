@@ -50,7 +50,7 @@ from biotp.text_ablation import (
     split_sentences,
     term_mention_counts,
 )
-from biotp.training import build_head, predict, train
+from biotp.training import BATCH_SIZE, build_head, predict, train
 from biotp.utils import set_seed
 
 DUAL_LOCALIZATION = "Cytoplasm-Nucleus"
@@ -577,6 +577,9 @@ def run_arm(
         mode="linear_probe",
         max_epochs=MAX_EPOCHS,
         lr=LEARNING_RATE,
+        # Project 1's long-standing value, now passed explicitly because `train`
+        # no longer defaults it. Unchanged, so these arms stay bit-for-bit.
+        batch_size=BATCH_SIZE,
     )
 
     predictions = predict(head, features["test"])

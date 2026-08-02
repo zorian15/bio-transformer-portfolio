@@ -15,6 +15,34 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-08-02: matching the optimiser removed a quarter of the delta, and moved the problem
+
+- **Question / hypothesis:** the previous entry found rungs 2 and 3 did not differ in exactly one thing: patience is counted in epochs, and rung 2 batched at 256 with lr 1e-3 against rung 3's 8 and 1e-4, so an epoch was 5x to 25x more gradient updates on rung 3. Does the rung-2-to-rung-3 delta survive equalising that? Issue #33.
+- **Setup:** `train` now takes a required `batch_size`, and both supervised rungs read one `SUPERVISED_BATCH_SIZE` / `SUPERVISED_LEARNING_RATE` pair, set to rung 3's values because rung 3's batch size is a memory constraint and rung 2's is free. Rung 2 re-run over the full 324-configuration grid, 771s. Rung 3 unchanged and not re-run: its settings did not move. Project 1 reproduces bit-for-bit on both cohorts, which is what licenses reading the two projects' numbers together.
+- **Result:** the confound was real and is now smaller, but it is not gone.
+
+  | | mean Spearman over 324 |
+  |---|---:|
+  | rung 2, old optimiser | 0.2236 |
+  | **rung 2, shared optimiser** | **0.2348** |
+  | ridge, converged floor | 0.2619 |
+  | LoRA | 0.2634 |
+
+  | paired contrast, seed-averaged (n=108) | mean | Wilcoxon p |
+  |---|---:|---:|
+  | new rung 2 − old rung 2 | +0.0112 | 0.005 |
+  | **LoRA − old rung 2** | +0.0399 | 8.6e-5 |
+  | **LoRA − new rung 2** | **+0.0287** | 0.002 |
+  | new rung 2 − ridge | −0.0271 | 0.107 |
+
+  **Matching the optimiser removed about a quarter of the apparent delta** (+0.040 to +0.029). What survives is significant overall, and by scheme it is significant *only* on the split that shares residue positions between folds: `random` +0.056 (p<0.001), `contiguous` +0.015 (p=0.30), `modulo` +0.015 (p=0.50). That sharpens the previous entry's finding rather than overturning it.
+
+  **The prediction I made was wrong, usefully.** I expected rung 2 to approach ridge once its optimiser matched, which would have shown it converged. It moved +0.011 and remains 0.027 short (p=0.107). So the delta is still not cleanly attributable, and the reason has changed: it is no longer an optimisation-budget difference.
+
+  **Where the remaining gap actually lives.** Broken out by readout, ridge minus the rung-2 MLP is +0.104 for `mean`, +0.009 for `at_position`, and **−0.031 for `difference_at_position`**, where the MLP wins. So this is not a general under-fit. It is one badly-conditioned readout: a mean-pooled 480-dimensional vector over a 300-residue protein differing at a single position, where ridge's tuned penalty does something the MLP's dropout and early stopping do not. The rung-2 head has no explicit weight decay. Filed as issue #35, because it is a regularisation problem rather than the optimisation one #33 named, and fixing it will move rung 2's numbers again.
+
+- **Decision / next step:** #33 is satisfied: an epoch-count difference can no longer produce different optimisation budgets, and `tests/test_dms_run_arms.py` asserts both rungs read the shared constants and that the old per-rung names are gone, so the agreement is a property rather than a coincidence. `method.md` now states plainly what still differs rather than claiming one respect. The headline stands where the previous entry left it: against a converged frozen baseline LoRA buys nothing (+0.0015, p=0.28), and the delta against the trained head is concentrated in the leaky split. Both figures changed materially, not just in matplotlib churn, and are committed.
+
 ### 2026-08-02: rung 3 ran, and the delta it appeared to show is rung 2's under-fit
 
 - **Question / hypothesis:** what does adapting the encoder buy over a frozen representation, across three assays, three splits, three readouts and four training sizes? This is the headline the ladder was built to produce.
