@@ -25,7 +25,7 @@ None of this has been exercised on the cluster yet. Do it once, in order, and st
 ```bash
 # 1. Build the env from the same file the laptop uses.
 mamba env create -f environment.yml
-mamba activate biollm
+conda activate biollm   # conda.sh provides this; mamba activate needs mamba.sh
 pip install -e .          # safe here; a cluster checkout is not a worktree
 
 # 2. Confirm you got a CUDA build, not the CPU one. conda-forge resolves this
@@ -67,7 +67,7 @@ ARRAY_JOB=$(sbatch --parsable slurm/submit-finetune.sh)
 # out. A wrap that just called python would fail on import, or worse, aggregate
 # into the default results directory rather than the one the array wrote to.
 sbatch --dependency=afterok:"$ARRAY_JOB" --wrap \
-  "source \"\$(conda info --base)/etc/profile.d/conda.sh\" && mamba activate biollm && \
+  "source \"\$(conda info --base)/etc/profile.d/conda.sh\" && conda activate biollm && \
    python projects/dms-benchmark/scripts/run_arms.py --rung lora --aggregate \
      --data-root \"${DATA_ROOT:-data}\" \
      --results-dir \"${RESULTS_DIR:-projects/dms-benchmark/results}\""

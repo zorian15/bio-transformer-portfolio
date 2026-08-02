@@ -546,10 +546,19 @@ def shard_name(config: Config) -> str:
 
     Every field of Config appears, so two configurations cannot collide.
     """
-    return (
+    name = (
         f"{config.rung}-{config.assay}-{config.scheme}-{config.readout}"
         f"-n{config.n}-seed{config.seed}-{config.checkpoint}.csv"
     )
+    # A Hugging Face style checkpoint like "facebook/esm2_t12_35M_UR50D" would
+    # turn this into a nested path, so a task would write into a directory that
+    # --aggregate never looks in and the shard would read as missing. Fail at the
+    # name rather than three steps later at the aggregation.
+    assert "/" not in name and "\\" not in name, (
+        f"configuration produces a shard name containing a path separator: "
+        f"{name!r}. A checkpoint holding a slash needs escaping first."
+    )
+    return name
 
 
 def shard_dir(results_dir: Path, rung: str) -> Path:

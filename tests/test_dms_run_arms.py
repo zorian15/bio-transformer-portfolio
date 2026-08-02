@@ -439,7 +439,9 @@ def run_main(monkeypatch, tmp_path: Path, argv: list[str], assays=("ASSAY_A",)):
             "n": config.n,
             "seed": config.seed,
             "checkpoint": config.checkpoint,
-            "spearman": 0.5,
+            # Deliberately skewed across the N axis rather than constant, so a
+            # manifest recording the mean instead of the median is detectable.
+            "spearman": float(config.n),
         },
     )
     monkeypatch.setattr(
@@ -779,4 +781,46 @@ def test_a_supervised_rung_rejects_a_zero_training_size(
                 "--seed",
                 "0",
             ],
+        )
+
+
+def test_the_aggregate_run_records_what_it_combined(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The aggregate manifest is the one a DECISION_LOG entry would cite.
+
+    The task side was pinned and this side was not, so the numbers a writeup
+    quotes were the ones nothing checked. Swapping the median for a mean, or
+    dropping both records, used to keep the suite green.
+    """
+    size = run_arms.grid_size("lora", ("ASSAY_A",))
+    for task_id in range(size):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", str(task_id)])
+    run_main(monkeypatch, tmp_path, ["--rung", "lora", "--aggregate"])
+
+    manifests = sorted((tmp_path / "logs").glob("dms-run-arms-2*.json"))
+    records = json.loads(manifests[-1].read_text())["records"]
+
+    assert records["configurations_aggregated"] == size
+    # The stub's spearman is the training size, so the four sizes appear equally
+    # often: the median is 320 while the mean would be 680.
+    assert records["median_spearman"] == float(
+        np.median([float(config.n) for config in run_arms.grid("lora", ("ASSAY_A",))])
+    )
+
+
+def test_the_shard_directory_is_the_one_the_docs_spell_out() -> None:
+    """`shard_dir` is otherwise only ever compared against itself.
+
+    Renaming it would pass every test while contradicting the batch script and
+    the README, which write the path out for a human to look in.
+    """
+    directory = run_arms.shard_dir(Path("results"), "lora")
+
+    assert directory.name == "lora_shards"
+    slurm = Path(__file__).resolve().parents[1] / "slurm"
+    for path in (slurm / "README.md", slurm / "submit-finetune.sh"):
+        assert directory.name in path.read_text(), (
+            f"{path.name} does not mention {directory.name}; the docs and the "
+            "code disagree about where a task writes its shard"
         )

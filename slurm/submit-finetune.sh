@@ -37,8 +37,11 @@ set -euo pipefail
 # Same env as local. biotp.utils.get_device() picks cuda here, mps on the laptop.
 # PYTORCH_ENABLE_MPS_FALLBACK is deliberately absent: it is a laptop-only setting
 # and exporting it on a CUDA node would be cargo cult.
+# `conda activate`, not `mamba activate`: the mamba shell function comes from
+# mamba.sh, which this has not sourced, while conda.sh always provides conda
+# activate. The env is the same one either way.
 source "$(conda info --base)/etc/profile.d/conda.sh"
-mamba activate biollm
+conda activate biollm
 
 # Point the checkpoint caches at storage the compute nodes share, so 324 tasks do
 # not each try to download ESM-2 on first use. Pre-warm once before submitting;
