@@ -166,23 +166,113 @@ Recording this was worth it. Without it, `A4GRB6` under `contiguous` sitting at
 0.02 across every label count reads as a broken pipeline rather than as a model
 that has seen 181 of 266 sites and cannot transfer to the remaining block.
 
-## Rung 3: a first measured point
+## Rung 3: adaptation buys nothing a converged frozen baseline does not
 
-The full grid runs on SLURM, since the fine-tuned rung cannot use the embedding
-cache and is the entire compute budget. One configuration has been run locally to
-validate the path and measure throughput.
+The full grid: 324 configurations, 3 assays x 3 schemes x 3 readouts x 4 training
+sizes x 3 seeds, on an L40S. Every run produced a result, no NaN, adapters
+attached in all of them (184,320 trainable parameters), and early stopping fired
+everywhere, between 11 and 110 epochs against a 200 cap.
 
-`R1AB_SARS2_Flynn_2022`, `modulo`, `at_position`, N=128, seed 0:
+### The naive comparison, and why it is not the answer
 
-| rung | Spearman |
-|---|---:|
-| zero-shot 35M | −0.073 |
-| frozen + head | 0.116 |
-| **LoRA + head** | **0.179** |
+Against rung 2 as published, LoRA gains **+0.0399 Spearman** on average
+(Wilcoxon p=8.6e-5, 69% of configurations). Taken at face value that is a
+positive result for fine-tuning.
 
-One point is not a result, but it is the first evidence that adapting the encoder
-buys something the frozen representation does not, on a position-disjoint split
-where rung 2 was struggling.
+It is not attributable to fine-tuning, for a reason that is a flaw in the ladder
+rather than in the data. Rung 2 trains at batch 256 and lr 1e-3; rung 3 at batch
+8 and lr 1e-4. Both stop after ten epochs without improvement, but an *epoch* is
+a different number of gradient updates on each rung:
+
+| N | rung 2 updates | rung 3 updates | ratio |
+|---:|---:|---:|---:|
+| 32 | 21 | 104 | 5x |
+| 128 | 22 | 352 | 16x |
+| 512 | 52 | 1,216 | 23x |
+| 2,048 | 184 | 4,608 | 25x |
+
+14.8% of rung-2 runs select their best epoch at or before epoch 2, which is
+essentially at initialisation. The two rungs share the stopping *constant* and
+not the stopping *rule*, so the delta mixes "adapting the encoder helped" with
+"rung 3 optimised for longer". Whatever else follows, that has to be fixed
+before the ladder can attribute anything to adaptation.
+
+### A converged frozen baseline recovers the entire gain
+
+[`frozen_reference.py`](https://github.com/zorian15/bio-transformer-portfolio/blob/main/projects/dms-benchmark/scripts/frozen_reference.py)
+fits ridge regression on the *same* cached embeddings, the *same* splits, the
+*same* subsample draws, choosing the penalty on the *same* validation fold rung 2
+selects its epoch on. Ridge has a closed-form solution, so it cannot be
+under-fit. It is not a fourth rung; it is the answer to "how much of the delta is
+the frozen representation, fit properly?"
+
+| contrast | mean | Wilcoxon p | wins |
+|---|---:|---:|---:|
+| LoRA − rung 2 as published | +0.0399 | 8.6e-5 | 69% |
+| ridge − rung 2 as published | +0.0383 | 0.017 | 57% |
+| **LoRA − ridge** | **+0.0015** | **0.28** | 59% |
+
+Mean Spearman across all 324: rung 2 **0.224**, ridge **0.262**, LoRA **0.263**.
+
+**Against a properly-fit frozen representation, LoRA buys nothing on average.**
+The apparent +0.040 is the size of rung 2's under-fit, not the value of
+adaptation. That is the headline of this rung, and it is a negative result.
+
+### What does survive: the split, not the adaptation
+
+LoRA beats ridge on exactly one scheme, and it is the one that lets the model see
+the test positions during training:
+
+| scheme | LoRA − ridge | p |
+|---|---:|---:|
+| `fold_random_5` | **+0.0195** | **0.032** |
+| `fold_contiguous_5` | +0.0071 | 0.96 |
+| `fold_modulo_5` | −0.0219 | 0.86 |
+
+The paired scheme contrast `random − modulo` is +0.049 (p=0.0022). Under
+`fold_random_5`, folds share almost every residue position, and predicting each
+test variant by the mean measured score of its position in the training pool
+alone reaches Spearman 0.80, 0.43 and 0.80 on the three assays. Under the
+position-disjoint schemes that predictor is undefined, because position overlap
+is exactly zero by construction. So there is a large, purely positional signal
+available under `random` and none under the other two, and adaptation is where
+the model picks it up.
+
+### Caveats that belong with these numbers
+
+**Three assays.** The 108 seed-averaged configurations rest on 3 assays and 3
+test folds per scheme, and the per-assay deltas change sign. Under a bootstrap
+clustered by assay, only `random` excludes zero: `contiguous` [−0.011, +0.073],
+`modulo` [−0.013, +0.078], `random` [+0.029, +0.115]. The effective sample size
+for any scheme-level statement is nearer 3 than 36.
+
+**The two disjoint schemes do not disagree.** Comparing each to zero gives
+`contiguous` p=0.017 and `modulo` p=0.57, which invites a story about why they
+differ. Paired, `contiguous − modulo` is +0.008, p=0.52. There is nothing to
+explain, and reading two p-values as a difference is a mistake this page made in
+draft.
+
+**`contiguous` carries a label-distribution shift that `modulo` does not**, since
+its folds are contiguous position blocks. Zero-shot scoring, which involves no
+training and so cannot leak, already differs by 0.25 Spearman between the two
+schemes on `A4GRB6_PSEAI_Chen_2020`. That bounds how much any cross-scheme
+comparison can mean.
+
+**The readout ordering depends on the baseline.** Against rung 2 as published,
+the `mean` readout appears to benefit most from adaptation (+0.080). Against
+ridge it is the worst (−0.051), while `difference_at_position` is the best
+(+0.036, p<0.001). The `mean` readout is where rung 2 is most under-fit, not
+where LoRA helps: a mean-pooled 480-dimensional vector over a 300-residue protein
+differing at one position is badly conditioned, and a dozen full-batch Adam steps
+do not resolve it.
+
+### What this rung is waiting on
+
+Rung 2 needs re-running with rung 3's optimiser, or patience redefined in
+gradient steps rather than epochs, before any delta here is attributable to
+adaptation. `frozen_ridge.csv` stays as a permanent sanity floor: it costs
+seconds once the embeddings are cached, and it is the check that catches this
+class of failure.
 
 ### The cost estimate was wrong, and validation was why
 
