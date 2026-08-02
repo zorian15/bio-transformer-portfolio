@@ -56,8 +56,46 @@ if [ -n "${BIOTP_ENV_ACTIVATE:-}" ]; then
     # shellcheck source=/dev/null
     source "${BIOTP_ENV_ACTIVATE}"
 else
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-    conda activate biollm
+    # Resolved into a variable first, and every step allowed to fail. A command
+    # substitution inside an `if` condition is NOT covered by the condition's
+    # exemption from `set -e`, so `if source "$(conda info --base)/..."` exits the
+    # script the moment conda is absent, which is exactly the case the preflight
+    # below exists to explain. Verified rather than assumed.
+    conda_base="$(conda info --base 2>/dev/null || true)"
+    if [ -n "${conda_base}" ] && [ -f "${conda_base}/etc/profile.d/conda.sh" ]; then
+        # shellcheck source=/dev/null
+        source "${conda_base}/etc/profile.d/conda.sh"
+        conda activate biollm || true
+    fi
+fi
+
+# Preflight. Both checks exist because their failures are otherwise reported as
+# something generic, once per task, with the real cause nowhere in the message.
+if ! python -c "import biotp" 2>/dev/null; then
+    echo "preflight: cannot import biotp after activating the environment." >&2
+    echo "  BIOTP_ENV_ACTIVATE = ${BIOTP_ENV_ACTIVATE:-<unset>}" >&2
+    echo "  python             = $(command -v python || echo '<none on PATH>')" >&2
+    echo >&2
+    echo "Either export BIOTP_ENV_ACTIVATE to your venv's activate script, or" >&2
+    echo "build the conda env named biollm. Forgetting the export is the common" >&2
+    echo "case: unset, this script falls back to conda, and on a machine where" >&2
+    echo "conda was never usable that fails with no indication why." >&2
+    echo "See slurm/README.md." >&2
+    exit 1
+fi
+
+# Only meaningful when the scheduler actually allocated a GPU. Run by hand on a
+# login node, CUDA_VISIBLE_DEVICES is unset and this is skipped, which keeps the
+# documented single-task debug path working.
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    if ! python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
+        echo "preflight: a GPU was allocated (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES})" >&2
+        echo "but torch cannot see it, so this is a CPU build or a driver mismatch." >&2
+        echo "That does not fail on its own, it runs roughly 50x slow, which across" >&2
+        echo "324 tasks is the expensive way to discover it. Check with:" >&2
+        echo "  python -c 'import torch; print(torch.__version__, torch.version.cuda)'" >&2
+        exit 1
+    fi
 fi
 
 # Point the checkpoint caches at storage the compute nodes share, so 324 tasks do
