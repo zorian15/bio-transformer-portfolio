@@ -495,3 +495,44 @@ def test_batch_size_actually_sets_the_number_of_updates() -> None:
     """
     assert updates_taken(256) == 3, "180 rows at batch 256 is one update per epoch"
     assert updates_taken(20) == 27, "180 rows at batch 20 is nine updates per epoch"
+
+
+def batch_sizes_seen(batch_size: int) -> list[int]:
+    """Rows in each training forward pass, recorded from the head itself."""
+    train_data, val_data, _ = classification_split()
+    head = training.build_head(N_FEATURES, N_CLASSES, "classification")
+    seen: list[int] = []
+    original = head.forward
+
+    def recording(inputs):  # type: ignore[no-untyped-def]
+        # Training passes only. Validation runs under eval(), and counting it
+        # would add the whole val split to every epoch.
+        if head.training:
+            seen.append(int(inputs.shape[0]))
+        return original(inputs)
+
+    head.forward = recording  # type: ignore[method-assign]
+    set_seed(0)
+    training.train(
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=1,
+        lr=1e-3,
+        batch_size=batch_size,
+    )
+    return seen
+
+
+def test_each_update_sees_exactly_batch_size_samples() -> None:
+    """The slice width, which the update count cannot see.
+
+    The minibatch loop has two halves: the stride it advances by and the width
+    it slices. `test_batch_size_actually_sets_the_number_of_updates` pins the
+    stride, and a half-finished rename that left the slice reading the old
+    module constant would keep the update count exactly right while every batch
+    saw a different, overlapping, shrinking window of rows. Nine updates of
+    twenty, not nine updates of whatever.
+    """
+    assert batch_sizes_seen(20) == [20] * 9

@@ -989,7 +989,16 @@ def tiny_assay_and_splits(width: int = 6):
 
 
 def test_rung_two_trains_with_the_shared_optimiser(monkeypatch) -> None:
-    """The values reaching `train`, not the text of the call that makes it."""
+    """The values reaching `train`, not the text of the call that makes it.
+
+    The constants are moved to sentinels first. Comparing against them as they
+    stand would pass against a rung wired to any other module constant that
+    happens to hold the same number, and several here are also 8. The literal
+    values are pinned separately by
+    `test_the_shared_batch_size_matches_the_committed_results`.
+    """
+    monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
+    monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
     seen = capture_optimiser(monkeypatch, "train")
     monkeypatch.setattr(
         run_arms, "assay_features", lambda *a, **k: np.zeros((9, 4), dtype=np.float32)
@@ -1014,6 +1023,8 @@ def test_rung_three_trains_with_the_same_optimiser(monkeypatch) -> None:
     stopping rule: an epoch is then the same number of gradient updates on both,
     which is the property issue #33 exists to restore.
     """
+    monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
+    monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
     seen = capture_optimiser(monkeypatch, "train_lora")
     monkeypatch.setattr(
         run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
