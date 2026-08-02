@@ -1058,6 +1058,7 @@ def test_the_manifest_records_the_supervised_optimiser(rung: str) -> None:
 
     assert supervised["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
     assert supervised["learning_rate"] == run_arms.SUPERVISED_LEARNING_RATE
+    assert supervised["max_epochs"] == run_arms.MAX_EPOCHS
 
 
 def test_zero_shot_records_no_optimiser() -> None:
@@ -1095,7 +1096,7 @@ def test_scoring_batch_size_is_not_the_training_one(monkeypatch) -> None:
     # the call read SUPERVISED_BATCH_SIZE instead. Verified: without this line
     # the rewire goes undetected.
     monkeypatch.setattr(run_arms, "LORA_SCORING_BATCH_SIZE", 3)
-    capture_optimiser(monkeypatch, "train_lora")
+    trained = capture_optimiser(monkeypatch, "train_lora")
     monkeypatch.setattr(
         run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
     )
@@ -1108,4 +1109,12 @@ def test_scoring_batch_size_is_not_the_training_one(monkeypatch) -> None:
     assert seen["batch_size"] == 3, (
         "scoring used the training batch size; the two are separate because "
         "scoring cannot change a result and the optimiser must not drift"
+    )
+    # And the mirror. Both constants are 8 in the repo, so training reading the
+    # scoring one is equally invisible, and the comment above
+    # LORA_SCORING_BATCH_SIZE explicitly invites retuning it as a memory knob.
+    # That retune would silently move rung 3's optimiser and reopen issue #33.
+    assert trained["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE, (
+        "training read the scoring batch size; retuning a memory knob would "
+        "then change the optimiser and reopen the confound issue #33 closed"
     )

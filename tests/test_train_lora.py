@@ -724,7 +724,10 @@ def test_both_rungs_report_batch_size_in_their_history() -> None:
     A field in one schema and not the other is a trap for whatever reads them
     next, and batch size is the setting issue #33 exists to keep equal.
     """
-    _, _, lora_history = run()
+    # A batch size distinct from every other 8 in this file's fixtures: the spec
+    # alpha is 8 and the validation split is 8 rows, so asserting == 8 would pass
+    # against a history that reported either of those instead.
+    _, _, lora_history = run(batch_size=5)
     head = training.build_head(4, 1, "regression")
     features = np.zeros((8, 4), dtype=np.float32)
     targets = np.arange(8, dtype=np.float32)
@@ -738,5 +741,5 @@ def test_both_rungs_report_batch_size_in_their_history() -> None:
         batch_size=4,
     )
 
-    assert lora_history["batch_size"] == 8
+    assert lora_history["batch_size"] == 5
     assert frozen_history["batch_size"] == 4
