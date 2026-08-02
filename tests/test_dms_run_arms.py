@@ -263,6 +263,12 @@ def test_the_adapter_block_survives_a_real_manifest(tmp_path: Path) -> None:
     manifest = json.loads(next(tmp_path.glob("records-test-*.json")).read_text())
 
     assert manifest["records"]["lora"] == run_arms.LORA_SPEC.as_history_block()
+    # The optimiser block rides the same loop and was going unasserted, which is
+    # how a field justified by "the manifest is the only record" reaches no
+    # manifest.
+    assert manifest["records"]["supervised"]["batch_size"] == (
+        run_arms.SUPERVISED_BATCH_SIZE
+    )
     assert LoraSpec.from_history_block(manifest["records"]["lora"]) == (
         run_arms.LORA_SPEC
     )
@@ -1068,3 +1074,38 @@ def test_the_shared_batch_size_matches_the_committed_results() -> None:
     """
     assert run_arms.SUPERVISED_BATCH_SIZE == 8
     assert run_arms.SUPERVISED_LEARNING_RATE == 1e-4
+
+
+def test_scoring_batch_size_is_not_the_training_one(monkeypatch) -> None:
+    """Both constants are 8, so rewiring this line is invisible without capture.
+
+    `predict_lora`'s batching is a memory knob and cannot change a result, which
+    is why it was split from the optimiser. Nothing enforced the split: the only
+    test reaching that call stubs it with a lambda that discards its arguments.
+    Same drift class issue #33 removed from the training path, one line below it.
+    """
+    seen: dict = {}
+
+    def capture(encoder, head, split, readout, batch_size):  # type: ignore[no-untyped-def]
+        seen["batch_size"] = batch_size
+        return np.arange(3, dtype=float)
+
+    # Moved off the shared value on purpose. Both constants are 8 in the repo, so
+    # asserting against LORA_SCORING_BATCH_SIZE as it stands would pass even if
+    # the call read SUPERVISED_BATCH_SIZE instead. Verified: without this line
+    # the rewire goes undetected.
+    monkeypatch.setattr(run_arms, "LORA_SCORING_BATCH_SIZE", 3)
+    capture_optimiser(monkeypatch, "train_lora")
+    monkeypatch.setattr(
+        run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
+    )
+    monkeypatch.setattr(run_arms, "build_head", lambda *a, **k: None)
+    monkeypatch.setattr(run_arms, "predict_lora", capture)
+    frame, splits, rows = tiny_assay_and_splits()
+
+    run_arms.run_lora(frame, splits, rows, "mean", "M" * 20, "ckpt", 0)
+
+    assert seen["batch_size"] == 3, (
+        "scoring used the training batch size; the two are separate because "
+        "scoring cannot change a result and the optimiser must not drift"
+    )

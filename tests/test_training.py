@@ -146,6 +146,7 @@ def test_train_returns_the_documented_history_fields() -> None:
         "best_epoch",
         "best_val_loss",
         "epochs_run",
+        "batch_size",
     }
     assert history["n_train"] == len(train_data[0])
     assert history["epochs_run"] == len(history["val_loss"])
