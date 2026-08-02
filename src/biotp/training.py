@@ -695,6 +695,11 @@ def train_lora(
     history.update(
         {
             "readout": readout,
+            # Recorded on both rungs, not just this one: the two histories are
+            # read side by side when the ladder's delta is computed, and a field
+            # present in one schema and absent from the other is a trap for
+            # whatever reads them next.
+            "batch_size": batch_size,
             # One nested block rather than three loose keys, so a manifest
             # reader finds the adapter configuration in one place and a SLURM
             # array can round-trip the same object it was given.

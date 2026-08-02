@@ -198,6 +198,14 @@ and rung 2 has been re-run. The delta shrank by about a quarter:
 | **LoRA − rung 2, shared optimiser** | **+0.0287** | 0.002 |
 | rung 2, shared optimiser − ridge | −0.0271 | 0.107 |
 
+**Eleven rung-2 runs are lower bounds.** With the smaller batch, 11 of 324
+rung-2 configurations reach the 200-epoch cap while still improving, with best
+epochs of 189 to 199; nine of them are the `mean` readout. No rung-3 run hits the
+cap. Those eleven numbers therefore understate rung 2 and would, if anything,
+inflate the delta. They do not: excluding them moves it from +0.0287 to +0.0292
+(p=0.0007). Worth stating because the truncation lands exactly on the readout
+where the head is already weakest.
+
 **The confound is smaller and not gone.** Rung 2 is still 0.027 below a ridge
 regression on the identical features, so it is still not converged and the
 residual delta cannot be cleanly attributed either. The reason has changed,

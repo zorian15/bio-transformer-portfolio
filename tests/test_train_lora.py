@@ -716,3 +716,27 @@ def test_predict_rejects_an_out_of_range_position() -> None:
     )
     with pytest.raises(AssertionError):
         training.predict_lora(encoder, head, broken, "at_position", batch_size=4)
+
+
+def test_both_rungs_report_batch_size_in_their_history() -> None:
+    """The two histories are read side by side to compute the ladder's delta.
+
+    A field in one schema and not the other is a trap for whatever reads them
+    next, and batch size is the setting issue #33 exists to keep equal.
+    """
+    _, _, lora_history = run()
+    head = training.build_head(4, 1, "regression")
+    features = np.zeros((8, 4), dtype=np.float32)
+    targets = np.arange(8, dtype=np.float32)
+    _, frozen_history = training.train(
+        head,
+        (features, targets),
+        (features, targets),
+        mode="linear_probe",
+        max_epochs=2,
+        lr=1e-3,
+        batch_size=4,
+    )
+
+    assert lora_history["batch_size"] == 8
+    assert frozen_history["batch_size"] == 4
