@@ -44,3 +44,27 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def clamp_unit_interval(value: float) -> float:
+    """Clamp a value to the closed unit interval [0.0, 1.0].
+
+    Metric helpers occasionally produce values a hair outside [0, 1] through
+    floating-point error, and downstream plotting treats that as a hard error.
+
+    Args:
+        value: The value to clamp.
+
+    Returns:
+        The value constrained to [0.0, 1.0].
+
+    Raises:
+        ValueError: If the value is NaN, which cannot be meaningfully clamped.
+    """
+    if value != value:
+        raise ValueError("cannot clamp NaN to the unit interval")
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value

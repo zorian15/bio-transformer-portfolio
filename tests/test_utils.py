@@ -13,7 +13,7 @@ import random
 import numpy as np
 import pytest
 
-from biotp.utils import get_device, set_seed
+from biotp.utils import clamp_unit_interval, get_device, set_seed
 
 VALID_DEVICES = {"cuda", "mps", "cpu"}
 
@@ -96,3 +96,7 @@ def test_set_seed_distinct_seeds_give_distinct_draws() -> None:
 def test_set_seed_sets_pythonhashseed() -> None:
     set_seed(1234)
     assert os.environ["PYTHONHASHSEED"] == "1234"
+
+
+def test_clamp_unit_interval_passes_through_interior_value() -> None:
+    assert clamp_unit_interval(0.5) == 0.5
