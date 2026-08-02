@@ -6,7 +6,11 @@
 #SBATCH --mem=48G
 #SBATCH --time=01:00:00
 #SBATCH --array=0-323%16
-#SBATCH --output=slurm-%x-%A_%a.out
+# Into slurm-logs/, which is tracked but whose contents are gitignored.
+# SLURM resolves this path before the script runs and will not create the
+# directory, so it is kept in the repo by slurm-logs/.gitkeep. Paths are
+# relative to the submitting directory, so submit from the repo root.
+#SBATCH --output=slurm-logs/%x-%A_%a.out
 # 'chorus' has the 48 GB L40S cards; fall back to 'campus-new' (11 GB) for small
 # models or LoRA on ESM-2 <= 150M. Check limits with: scontrol show partition <name>.
 # If a job is rejected for QOS, add a line like: #SBATCH --qos=normal

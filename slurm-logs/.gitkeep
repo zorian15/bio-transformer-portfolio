@@ -1,0 +1,8 @@
+Tracked so the directory exists in a fresh clone.
+
+SLURM resolves #SBATCH --output before the job script runs, so it cannot create
+this directory itself and a mkdir inside the script would be too late. A missing
+directory means the job produces no output at all, which is a confusing way to
+lose the one artifact you would use to debug it.
+
+The .out files themselves are gitignored.
