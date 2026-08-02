@@ -958,6 +958,26 @@ def test_slurm_output_goes_to_a_tracked_but_ignored_directory() -> None:
 # Sharing the constants fixes it; this is what stops them drifting apart again.
 
 
+# What each supervised rung is entitled to pass differently: its data, how it
+# reads a variant, its adapters, and its seed. Everything else, named or not, has
+# to match, because the ladder's delta is only attributable while it does.
+RUNG_SPECIFIC_KWARGS = frozenset(
+    {
+        "mode",
+        "encoder",
+        "head",
+        "train_data",
+        "val_data",
+        "readout",
+        "lora",
+        "seed",
+    }
+)
+
+# Distinguishes "both rungs passed None" from "one rung did not pass this at all".
+MISSING = object()
+
+
 def capture_optimiser(monkeypatch, target: str) -> dict:
     """Replace `target` in run_arms with a stub that records its keyword arguments.
 
@@ -1164,7 +1184,6 @@ def test_both_supervised_rungs_receive_identical_optimiser_kwargs(monkeypatch) -
     monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
     monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
     frame, splits, rows = tiny_assay_and_splits()
-    optimiser_keys = ("lr", "batch_size", "max_epochs")
 
     frozen_seen = capture_optimiser(monkeypatch, "train")
     monkeypatch.setattr(
@@ -1185,6 +1204,18 @@ def test_both_supervised_rungs_receive_identical_optimiser_kwargs(monkeypatch) -
     )
     run_arms.run_lora(frame, splits, rows, "mean", "M" * 20, "ckpt", 0)
 
-    assert {k: frozen_seen[k] for k in optimiser_keys} == {
-        k: lora_seen[k] for k in optimiser_keys
-    }, "the two supervised rungs were handed different optimiser settings"
+    # Everything except what a rung is entitled to differ on. Listing what must
+    # match is an open set that grows with every knob anyone adds, and forgetting
+    # to extend it is silent; listing what may differ is closed, and extending it
+    # is a deliberate act with a reviewable diff. MISSING makes a key present on
+    # one rung and absent from the other fail too.
+    shared = (set(frozen_seen) | set(lora_seen)) - RUNG_SPECIFIC_KWARGS
+    assert shared, "captured no shared kwargs at all, so this asserts nothing"
+
+    assert {key: frozen_seen.get(key, MISSING) for key in shared} == {
+        key: lora_seen.get(key, MISSING) for key in shared
+    }, (
+        "the two supervised rungs were handed different optimiser settings; if "
+        "the differing key is legitimately rung-specific, add it to "
+        "RUNG_SPECIFIC_KWARGS rather than removing this assertion"
+    )

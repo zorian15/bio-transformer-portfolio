@@ -536,3 +536,19 @@ def test_each_update_sees_exactly_batch_size_samples() -> None:
     twenty, not nine updates of whatever.
     """
     assert batch_sizes_seen(20) == [20] * 9
+
+
+def test_the_tracker_does_not_let_a_caller_choose_its_patience() -> None:
+    """`_BestEpochTracker`'s docstring promises this; nothing tested it.
+
+    Patience is read from the module constant so the two supervised rungs cannot
+    pass different values. A `patience` parameter would reopen issue #33 through
+    its original door, and being underscore-private it also slips past the
+    no-default-arguments convention check.
+    """
+    parameters = inspect.signature(training._BestEpochTracker.__init__).parameters
+
+    assert "patience" not in parameters, (
+        "the tracker accepts a patience argument, so two call sites can be given "
+        "different stopping rules while appearing to share an implementation"
+    )
