@@ -8,6 +8,7 @@ measuring something other than what the pre-registration says.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -15,6 +16,9 @@ from types import ModuleType
 import numpy as np
 import pandas as pd
 import pytest
+
+from biotp.runlog import run_context
+from biotp.training import LoraSpec
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -181,3 +185,68 @@ def test_validation_is_capped_and_stable() -> None:
 def test_a_small_validation_fold_is_left_alone() -> None:
     splits = run_arms.make_splits(spread(), "ASSAY_A", "fold_modulo_5")
     assert len(splits.val) == 6, "smaller than the cap, so untouched"
+
+
+# --- What the manifest records about the configuration -------------------------
+#
+# The adapter hyperparameters are a module constant, not an argv flag, so they
+# reach the manifest only if something records them deliberately. Nothing did:
+# `train_lora` built the nested block in its history and this script dropped it,
+# so a rung-3 manifest named the assay, scheme and seed but never said what was
+# adapted. That went unnoticed because the unit tests assert on the history and
+# nothing asserted on the script. These close that.
+
+
+def test_rung_three_records_the_adapter_configuration() -> None:
+    assert run_arms.configuration_records("lora") == {
+        "lora": {"rank": 8, "alpha": 16, "target_modules": ["q_proj", "v_proj"]}
+    }
+
+
+@pytest.mark.parametrize("rung", ["zero_shot", "frozen"])
+def test_the_other_rungs_record_no_adapter_configuration(rung: str) -> None:
+    """A block describing adapters would be a lie on a rung that attaches none."""
+    assert run_arms.configuration_records(rung) == {}
+
+
+def test_every_rung_has_a_decision_recorded_for_it() -> None:
+    """A fourth rung must not silently inherit rung 1's empty block."""
+    for rung in run_arms.RUNGS:
+        run_arms.configuration_records(rung)
+
+
+def test_an_unknown_rung_is_rejected() -> None:
+    with pytest.raises(AssertionError, match="unknown rung"):
+        run_arms.configuration_records("full_finetune")
+
+
+def test_the_recorded_block_rebuilds_the_spec_that_actually_ran() -> None:
+    """The manifest has to carry enough to reconstruct the run, not just describe it.
+
+    This is what a SLURM array task does in reverse: the block is written to a
+    manifest, read back, and turned into the object the next run is configured
+    from. Asserting equality against LORA_SPEC rather than against literals ties
+    the manifest to the constant the pipeline actually uses, so changing the rank
+    without the manifest following it fails here.
+    """
+    block = run_arms.configuration_records("lora")["lora"]
+
+    assert LoraSpec.from_history_block(block) == run_arms.LORA_SPEC
+
+
+def test_the_adapter_block_survives_a_real_manifest(tmp_path: Path) -> None:
+    """End to end through runlog, so JSON serialization is not assumed.
+
+    `configuration_records` returning the right dict proves nothing if the
+    manifest cannot hold a nested block, so this writes and reads a real one.
+    """
+    with run_context("records-test", log_dir=tmp_path, params={}) as run:
+        for key, value in run_arms.configuration_records("lora").items():
+            run.record(key, value)
+
+    manifest = json.loads(next(tmp_path.glob("records-test-*.json")).read_text())
+
+    assert manifest["records"]["lora"] == run_arms.LORA_SPEC.as_history_block()
+    assert LoraSpec.from_history_block(manifest["records"]["lora"]) == (
+        run_arms.LORA_SPEC
+    )

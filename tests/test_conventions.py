@@ -12,6 +12,7 @@ to these APIs as they grow, not about banning defaults everywhere.
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import inspect
 import itertools
@@ -64,6 +65,13 @@ EXPECTED_FUNCTIONS = {
         # sharing the guard let one path raise where the other returned a padding
         # vector. See issue #11.
         "validate_positions",
+        # The collapse arithmetic the guard above protects, promoted for the
+        # same reason and one issue later: biotp.training and the Project 1
+        # benchmark script both import these across a module boundary, so the
+        # underscore said private while two other trees depended on them. See
+        # issue #14.
+        "mean_pool_residues",
+        "select_residue",
     },
     "biotp.evaluation": {
         "grouped_split",
@@ -143,6 +151,38 @@ def test_stub_apis_declare_no_default_arguments(module: ModuleType) -> None:
         if param.default is not inspect.Parameter.empty
     )
     assert not offenders, f"defaults added to {module.__name__}: {offenders}"
+
+
+def public_dataclasses(module: ModuleType) -> list[type]:
+    """Return dataclasses defined in this module, skipping imports and privates."""
+    return [
+        obj
+        for name, obj in vars(module).items()
+        if inspect.isclass(obj)
+        and dataclasses.is_dataclass(obj)
+        and not name.startswith("_")
+        and obj.__module__ == module.__name__
+    ]
+
+
+@pytest.mark.parametrize("module", STUB_MODULES, ids=module_id)
+def test_stub_dataclasses_declare_no_default_fields(module: ModuleType) -> None:
+    """The no-defaults rule follows parameters when they are grouped into a type.
+
+    `train_lora`'s adapter hyperparameters moved into a frozen dataclass to get
+    the signature down and to give the SLURM array one object per job (issue
+    #14). A field default would reintroduce through the back door exactly what
+    the check above forbids at the front, and `inspect.signature` on a module's
+    functions cannot see it.
+    """
+    offenders = sorted(
+        f"{klass.__name__}.{field.name}"
+        for klass in public_dataclasses(module)
+        for field in dataclasses.fields(klass)
+        if field.default is not dataclasses.MISSING
+        or field.default_factory is not dataclasses.MISSING
+    )
+    assert not offenders, f"dataclass defaults in {module.__name__}: {offenders}"
 
 
 # --- CI actually runs the network suite (issue #8) ----------------------------

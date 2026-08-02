@@ -13,7 +13,10 @@ A cache entry is reused only when **both** halves of its key match:
    and the residue positions when one is requested. Under the `at_position`
    readout the position is part of the input's identity, since the same sequence
    read at two positions is two different vectors, so the hashed item is
-   `f"{sequence}@{position}"` rather than the sequence alone.
+   `f"{sequence}@{position}"` rather than the sequence alone. That join is
+   injective: `@` is outside both the 20-residue alphabet and the decimal digits,
+   so it appears exactly once and splits the item back into the pair that made
+   it, and two distinct (sequence, position) pairs cannot collapse onto one key.
 2. **The spec**: every parameter of the embedding code that changes the output.
 
 The spec is built by `sequence_embedding_spec(model_name, readout)` and

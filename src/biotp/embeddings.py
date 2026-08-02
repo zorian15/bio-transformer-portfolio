@@ -199,8 +199,13 @@ def _length_bucketed_batches(lengths: list[int], batch_size: int) -> list[list[i
     ]
 
 
-def _mean_pool_residues(representations: Any, lengths: Any) -> Any:
+def mean_pool_residues(representations: Any, lengths: Any) -> Any:
     """Mean over residue positions for a whole batch at once, on-device.
+
+    Public for the same reason `validate_positions` is: the LoRA rung in
+    `biotp.training` and the benchmark script both collapse activations this way,
+    and a helper with consumers in two other trees is public whatever its name
+    says. Under the underscore, a rename here broke them at import.
 
     Args:
         representations: (batch, positions, width) activations from the model.
@@ -258,8 +263,11 @@ def validate_positions(
         )
 
 
-def _select_residue(representations: Any, positions: Any) -> Any:
+def select_residue(representations: Any, positions: Any) -> Any:
     """Gather one residue vector per batch row, on-device.
+
+    Public alongside `mean_pool_residues`: both rungs of the DMS ladder read the
+    same residue through this, and only one of them lives in this module.
 
     Args:
         representations: (batch, positions, width) activations from the model.
@@ -381,13 +389,13 @@ def embed_sequences(
             batch_lengths = torch.tensor(
                 [lengths[index] for index in indices], device=representations.device
             )
-            collapsed = _mean_pool_residues(representations, batch_lengths)
+            collapsed = mean_pool_residues(representations, batch_lengths)
         else:
             assert positions is not None  # Established above; narrows for mypy.
             batch_positions = torch.tensor(
                 [positions[index] for index in indices], device=representations.device
             )
-            collapsed = _select_residue(representations, batch_positions)
+            collapsed = select_residue(representations, batch_positions)
         # Scatter back to the caller's order, undoing the length bucketing.
         out[indices] = collapsed.float().cpu().numpy()
 
@@ -553,6 +561,14 @@ def _cache_items(sequences: list[str], positions: list[int] | None) -> list[str]
     same sequence read at two positions is two different vectors, so hashing the
     sequence alone would serve the first under the second's key. That is issue
     #4's failure mode reached by a new route, so it is closed the same way.
+
+    The joined form is injective, which is the whole job of a function that
+    builds cache keys and was previously left to the reader to verify. `@` is
+    outside the 20-residue alphabet and outside the decimal digits, so it appears
+    exactly once in `f"{sequence}@{position}"` and splits the string back into
+    the pair that made it. Two distinct (sequence, position) pairs therefore
+    cannot produce one item, and a collision here would silently serve one
+    variant's vector for another's.
     """
     if positions is None:
         return sequences

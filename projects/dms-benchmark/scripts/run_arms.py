@@ -54,6 +54,7 @@ from biotp.evaluation import spearman
 from biotp.runlog import DEFAULT_LOG_DIR, get_logger, run_context
 from biotp.training import (
     LORA_READOUTS,
+    LoraSpec,
     VariantSplit,
     build_head,
     predict,
@@ -75,6 +76,10 @@ LADDER_CHECKPOINT = "esm2_t12_35M_UR50D"
 ZERO_SHOT_CHECKPOINTS = ("esm2_t12_35M_UR50D", "esm2_t33_650M_UR50D")
 
 SCHEMES = ("fold_random_5", "fold_modulo_5", "fold_contiguous_5")
+
+# The three rungs of the ladder, named once so argparse and the manifest agree
+# on the set and a fourth rung cannot be added to one without the other.
+RUNGS = ("zero_shot", "frozen", "lora")
 
 # Fold 0 tests, fold 1 selects, folds 2-4 supply training data. Fixed rather than
 # rotated: see the module docstring.
@@ -103,9 +108,11 @@ LORA_BATCH_SIZE = 8
 MAX_EPOCHS = 200
 LEARNING_RATE = 1e-3
 LORA_LEARNING_RATE = 1e-4
-LORA_RANK = 8
-LORA_ALPHA = 16
-LORA_TARGET_MODULES = ("q_proj", "v_proj")
+
+# The adapter configuration every rung-3 run uses. One object rather than three
+# constants, so the SLURM array can carry it per job and the run manifest records
+# it as one block.
+LORA_SPEC = LoraSpec(rank=8, alpha=16, target_modules=("q_proj", "v_proj"))
 
 log = get_logger("dms-run-arms")
 
@@ -393,9 +400,7 @@ def run_lora(
         max_epochs=MAX_EPOCHS,
         lr=LORA_LEARNING_RATE,
         batch_size=LORA_BATCH_SIZE,
-        lora_rank=LORA_RANK,
-        lora_alpha=LORA_ALPHA,
-        target_modules=LORA_TARGET_MODULES,
+        lora=LORA_SPEC,
         seed=seed,
     )
     test = variant_split(assay, splits.test, reference)
@@ -486,11 +491,31 @@ def grid(rung: str, assays: tuple[str, ...]) -> Iterator[Config]:
                         )
 
 
+def configuration_records(rung: str) -> dict[str, Any]:
+    """The manifest entries describing how this rung was configured.
+
+    Only rung 3 has configuration that argv does not already carry: the adapter
+    hyperparameters are a module constant, so `vars(args)` records nothing about
+    them and a manifest would otherwise describe a fine-tuning run without
+    saying what was adapted. The commit hash would be the only trace, which is
+    archaeology at best and useless from a dirty tree.
+
+    A separate function rather than an inline `run.record`, so the rung-to-
+    records mapping is testable without a pipeline run. Nothing else in this
+    script is, which is how the gap this closes went unnoticed.
+    """
+    assert rung in RUNGS, f"unknown rung {rung!r}; expected one of {sorted(RUNGS)}"
+    if rung != "lora":
+        return {}
+    # One nested block rather than three loose keys, matching the shape
+    # train_lora reports in its history. Read it back with
+    # LoraSpec.from_history_block.
+    return {"lora": LORA_SPEC.as_history_block()}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--rung", required=True, choices=["zero_shot", "frozen", "lora"]
-    )
+    parser.add_argument("--rung", required=True, choices=list(RUNGS))
     parser.add_argument(
         "--all", action="store_true", help="loop the whole rung locally"
     )
@@ -513,6 +538,9 @@ def main() -> int:
             assays = tuple(sorted(metadata["assays"]))
             run.record("assays", list(assays))
             run.record("variants", len(table))
+
+        for key, value in configuration_records(args.rung).items():
+            run.record(key, value)
 
         if args.all:
             configs = list(grid(args.rung, assays))

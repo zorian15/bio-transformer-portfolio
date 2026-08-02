@@ -33,7 +33,7 @@ import time
 
 import numpy as np
 
-from biotp.embeddings import Esm2Bundle
+from biotp.embeddings import PROGRESS_EVERY_N_BATCHES, Esm2Bundle
 from biotp.runlog import get_logger
 
 # A substitution as (zero-based position, wild-type residue, mutant residue). The
@@ -43,9 +43,6 @@ from biotp.runlog import get_logger
 Substitution = tuple[int, str, str]
 
 AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWY")
-
-# How often the position loop reports progress, matching the embedding path.
-PROGRESS_EVERY_N_BATCHES = 25
 
 
 def parse_substitutions(mutant: str, one_based: bool) -> list[Substitution]:

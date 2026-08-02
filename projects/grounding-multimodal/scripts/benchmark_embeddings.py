@@ -50,9 +50,9 @@ from biotp.embeddings import (
     MAX_SEQUENCE_LENGTH,
     Esm2Bundle,
     _length_bucketed_batches,
-    _mean_pool_residues,
     embed_sequences,
     load_esm2,
+    mean_pool_residues,
 )
 from biotp.runlog import DEFAULT_LOG_DIR, get_logger, run_context
 
@@ -255,7 +255,7 @@ def profile_phases(
             [len(sequence) for sequence in batch], device=representations.device
         )
         out[indices] = (
-            _mean_pool_residues(representations, batch_lengths).float().cpu().numpy()
+            mean_pool_residues(representations, batch_lengths).float().cpu().numpy()
         )
         phases["pool_and_transfer"] += time.monotonic() - mark
 

@@ -15,6 +15,37 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-08-01: refactor the training layer before the SLURM array (issue #14)
+
+- **Question / hypothesis:** three findings deferred from PR #13's reviews, none of them a correctness bug, all of them places where the discipline `embeddings.py` got right did not cross into `training.py`. The question is whether they can be cleaned up without moving a single number, since the SLURM array is the first place a diverged early-stopping rule would corrupt a real result rather than a toy one.
+- **Setup:** no experiment. Refactor only: a frozen `LoraSpec` grouping the adapter hyperparameters, a shared `_BestEpochTracker` owning best-epoch selection and the stopping rule for both `train` and `train_lora`, and a `tests/conftest.py` consolidating three diverged encoder stubs.
+- **Result:** every committed artifact is byte-identical, re-run against the final state of the branch.
+
+  | artifact | rung / cohort | outcome |
+  |---|---|---|
+  | `grounding-multimodal/results/arms_all.csv`, `arms_all.md`, `ablation_all.json`, `per_class_f1_all.json` | Project 1, all | byte-identical |
+  | `grounding-multimodal/results/arms_annotated.csv`, `arms_annotated.md`, `ablation_annotated.json`, `per_class_f1_annotated.json` | Project 1, annotated | byte-identical |
+  | `dms-benchmark/results/frozen.csv` | rung 2 | byte-identical |
+  | `dms-benchmark/results/zero_shot.csv` | rung 1 | every Spearman identical, see below |
+
+  The shared loop is bit-identical by construction rather than by luck: `_BestEpochTracker` draws no randomness and changes no arithmetic, so the number and order of RNG draws in both loops is unchanged. The re-runs confirm that rather than discover it.
+
+  **Rung 3 was smoke-tested against real ESM-2 and real peft**, since the offline suite only exercises it against a toy `nn.Module`. The recorded configuration (`R1AB_SARS2_Flynn_2022`, `fold_modulo_5`, `at_position`, N=128, seed 0) returns Spearman **0.1792351850878362**, identical to the last digit to the pre-refactor run in `logs/dms-run-arms-20260801T082036Z.json`, and reproduced twice. So the LoRA path is bit-for-bit too, not only the frozen one. `trainable_encoder_parameters = 184320` confirms the adapters attached through the new `LoraSpec` plumbing rather than silently not attaching, and `best_epoch = 12` with `epochs_run = 23` puts the stop at exactly epoch 22, which is the shared tracker's `best + EARLY_STOPPING_PATIENCE` boundary confirmed on real data rather than in a unit test. 357.7s and 390.1s on MPS, consistent with the 441.7s measured before the validation cap analysis.
+
+  **That smoke run found a half-delivered payoff.** Issue #14 asked for two things from `LoraSpec`: one object per SLURM job, and a manifest carrying a single nested block instead of loose keys. The nested block existed in `train_lora`'s history, but `run_arms.py` recorded none of it, so a rung-3 manifest still described a run without saying what was adapted and the only record of rank and alpha was the commit hash. That is the original complaint, untouched. `run.record("lora", LORA_SPEC.as_history_block())` closes it, scoped to the lora rung. No test would have caught this: the unit tests assert on `history["lora"]`, and nothing asserts on what the script records.
+
+  **One pre-existing discrepancy, surfaced here and fixed in its own commit.** Re-running rung 1 reproduces all eighteen Spearman values exactly, but emits an extra `n_val` column. `zero_shot.csv` was committed in `c0e0c63`; the `n_val` column entered the row schema in the *later* commit `5ce2c90`, which capped validation and re-ran rung 2 but not rung 1. The committed file was therefore stale in its columns, not in its numbers. It has been regenerated: all eighteen rows byte-identical on every shared column, `n_val` added and uniformly 256. Note that rung 1 trains nothing, so its `n_val` records the size of a split it never uses; the column is uniform across rungs by design, and rung 2's file already carried it.
+
+  The figures were re-run as the convention requires and are **not** committed. `make_figures.py` reads `zero_shot.csv`, but its output differs only in matplotlib's embedded `<dc:date>` and its randomly generated element ids: after normalising those two, every coordinate is identical. Committing that churn would assert a change to the figures that did not happen. Worth knowing for next time: these SVGs are not byte-reproducible, so "re-run the script and commit the result" always produces a diff, and only a normalised comparison distinguishes a real one.
+
+  **No `EMBEDDING_IMPL_VERSION` bump, deliberately.** The diff to `embeddings.py` is two renames plus one docstring: no change to pooling, truncation, normalization, layer selection, dtype, or the empty-text rule. `test_cache_key_is_stable_for_the_recorded_spec` passing with `GOLDEN_SPEC_KEY` untouched is the evidence.
+
+  **One history format change.** `train_lora`'s history reports the adapter configuration as a nested `"lora": {"rank", "alpha", "target_modules"}` block, replacing the loose `lora_rank` / `lora_alpha` / `target_modules` keys. Nothing in the repo read the old keys, but manifests already written under `logs/` carry them, so a reader comparing an old manifest to a new one should expect the shape to differ.
+
+  **What the fixture consolidation bought, beyond tidiness.** Only the embeddings stub poisoned its non-residue slots, so a special-token read was loud on the frozen path and invisible on the LoRA path. That asymmetry is part of why the missing position guard survived PR #13's review. `TinyEsm` now poisons unconditionally, and a test reads BOS and EOS through `_encode_batch` to prove the fixture can tell; against the unpoisoned fixture it returns an ordinary-looking vector. The LoRA path also had no coverage of the `mean` readout at all, which the poisoned fixture makes worth adding.
+
+- **Decision / next step:** the training layer is ready for the SLURM array PR. `LORA_SPEC` in `projects/dms-benchmark/scripts/run_arms.py` is the one object an array task now needs to carry, in place of three module constants that were not reachable from the CLI. Review caught that the round trip the array will actually perform did not work: `as_history_block` widens `target_modules` to a list for JSON, which is exactly what the constructor refuses, so `LoraSpec(**block)` raised. `from_history_block` is the inverse, and it re-runs every check rather than handing back a dict nobody validated. Without it the array PR would have met that assertion under time pressure, where the obvious fix is to loosen the one guard that catches a bare-string `target_modules`. Deliberately still out of scope: the `MeanReadout()` / `AtPosition(positions)` sum type that would make `readout` and `positions` an unrepresentable-invalid-state pair. It collapses several of these findings at once and is worth revisiting if a fourth readout ever lands, since adding one currently means editing five sites across two modules.
+
 ### 2026-08-01: the rung-3 estimate was wrong because it never modelled validation
 
 - **Question / hypothesis:** smoke-test one fine-tuned configuration locally, to validate the path before submitting 81 SLURM jobs and to turn #11's ~7 GPU-hour estimate into a measurement.

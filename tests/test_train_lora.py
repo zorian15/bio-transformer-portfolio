@@ -10,10 +10,19 @@ model that trains, converges, and has adapted nothing.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 from typing import Any
 
 import numpy as np
 import pytest
+from conftest import (
+    AMINO_ACIDS,
+    POISON,
+    RESIDUE_TOKEN_IDS,
+    poison_non_residues,
+    tokenize_batch,
+)
 
 from biotp import training
 from biotp.embeddings import Esm2Bundle
@@ -22,8 +31,9 @@ from biotp.utils import set_seed
 WIDTH = 16
 VOCAB = 33
 LIMIT = 64
-BOS, PAD, EOS = 0, 1, 2
-TOKENS = {aa: 4 + offset for offset, aa in enumerate("ACDEFGHIKLMNPQRSTVWY")}
+
+# The single reference every split in this module mutates.
+WILDTYPE = "MKTFFVLLLACDEFGHIKLM"
 
 
 def build_tiny_encoder() -> Any:
@@ -68,22 +78,22 @@ def build_tiny_encoder() -> Any:
             hidden = self.embed_tokens(tokens)
             for layer in self.layers:
                 hidden = layer(hidden)
-            return {"representations": {layer: hidden for layer in repr_layers}}
+            # Poisoned on the way out, never before the layers: the special
+            # positions still serve as attention keys and values, so the module
+            # trains exactly as it did unpoisoned and gradients still reach the
+            # adapters through the residue rows. Unconditional on purpose. An
+            # opt-out is what let this fixture and the embedding one diverge,
+            # and a padding vector that looks like a residue vector is how the
+            # missing position guard survived review.
+            poisoned = poison_non_residues(hidden, tokens)
+            return {"representations": {layer: poisoned for layer in repr_layers}}
 
     return TinyEsm()
 
 
 def batch_converter(batch: list[tuple[str, str]]) -> tuple[Any, Any, Any]:
-    import torch
-
-    longest = max(len(sequence) for _, sequence in batch)
-    tokens = torch.full((len(batch), longest + 2), PAD, dtype=torch.long)
-    for row, (_, sequence) in enumerate(batch):
-        tokens[row, 0] = BOS
-        for column, residue in enumerate(sequence):
-            tokens[row, column + 1] = TOKENS[residue]
-        tokens[row, len(sequence) + 1] = EOS
-    return [label for label, _ in batch], [text for _, text in batch], tokens
+    labels, texts, tokens = tokenize_batch(batch, RESIDUE_TOKEN_IDS)
+    return labels, texts, tokens
 
 
 def tiny_bundle() -> Esm2Bundle:
@@ -105,18 +115,16 @@ def toy_split(count: int, seed: int) -> training.VariantSplit:
     to reduce loss has a broken optimizer rather than an impossible task.
     """
     rng = np.random.default_rng(seed)
-    residues = "ACDEFGHIKLMNPQRSTVWY"
-    wildtype = "MKTFFVLLLACDEFGHIKLM"
 
     sequences: list[str] = []
     positions: list[int] = []
     targets: list[float] = []
     for _ in range(count):
-        index = int(rng.integers(0, len(wildtype)))
-        mutant = residues[int(rng.integers(0, len(residues)))]
-        sequences.append(wildtype[:index] + mutant + wildtype[index + 1 :])
+        index = int(rng.integers(0, len(WILDTYPE)))
+        mutant = AMINO_ACIDS[int(rng.integers(0, len(AMINO_ACIDS)))]
+        sequences.append(WILDTYPE[:index] + mutant + WILDTYPE[index + 1 :])
         positions.append(index)
-        targets.append(float(TOKENS[mutant]))
+        targets.append(float(RESIDUE_TOKEN_IDS[mutant]))
 
     return training.VariantSplit(
         sequences=sequences,
@@ -140,13 +148,192 @@ def run(
         "max_epochs": max_epochs,
         "lr": 1e-2,
         "batch_size": 8,
-        "lora_rank": 4,
-        "lora_alpha": 8,
-        "target_modules": ("q_proj", "v_proj"),
+        "lora": training.LoraSpec(rank=4, alpha=8, target_modules=("q_proj", "v_proj")),
         "seed": 0,
     }
     kwargs.update(overrides)
     return training.train_lora(**kwargs)
+
+
+def ragged_split(count: int, seed: int) -> training.VariantSplit:
+    """Variants of differing lengths, for the readout that pools every residue.
+
+    The mean readout takes no positions, so the wild type's length stops being
+    fixed and a batch genuinely has to be padded. The target is the mean residue
+    id, which is what a correct pooling of this stub recovers up to the encoder's
+    own transform, so the task stays learnable.
+    """
+    rng = np.random.default_rng(seed)
+
+    sequences: list[str] = []
+    targets: list[float] = []
+    for _ in range(count):
+        length = int(rng.integers(4, len(WILDTYPE) + 1))
+        sequence = "".join(
+            AMINO_ACIDS[int(rng.integers(0, len(AMINO_ACIDS)))] for _ in range(length)
+        )
+        sequences.append(sequence)
+        targets.append(
+            float(np.mean([RESIDUE_TOKEN_IDS[residue] for residue in sequence]))
+        )
+
+    return training.VariantSplit(
+        sequences=sequences,
+        positions=None,
+        targets=np.asarray(targets, dtype=np.float32),
+        wildtype=None,
+    )
+
+
+# --- LoraSpec ------------------------------------------------------------------
+
+
+def test_lora_spec_is_frozen() -> None:
+    """A SLURM array holds one of these per job; a mutated copy is a lost run."""
+    spec = training.LoraSpec(rank=4, alpha=8, target_modules=("q_proj",))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        spec.rank = 8  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("rank", [0, -1])
+def test_lora_spec_rejects_a_nonpositive_rank(rank: int) -> None:
+    with pytest.raises(AssertionError, match="must be positive"):
+        training.LoraSpec(rank=rank, alpha=8, target_modules=("q_proj",))
+
+
+@pytest.mark.parametrize("alpha", [0, -1])
+def test_lora_spec_rejects_a_nonpositive_alpha(alpha: int) -> None:
+    with pytest.raises(AssertionError, match="must be positive"):
+        training.LoraSpec(rank=4, alpha=alpha, target_modules=("q_proj",))
+
+
+def test_lora_spec_rejects_empty_target_modules() -> None:
+    with pytest.raises(AssertionError, match="nothing would be adapted"):
+        training.LoraSpec(rank=4, alpha=8, target_modules=())
+
+
+def test_lora_spec_rejects_a_bare_string_of_target_modules() -> None:
+    """`target_modules="q_proj"` is the easy typo, and it used to reach peft.
+
+    A string is iterable, so it survived the emptiness check and arrived as
+    ['q', '_', 'p', 'r', 'o', 'j'], matching nothing and dying inside peft with
+    a message about none of those characters being module names.
+    """
+    with pytest.raises(AssertionError, match="tuple of module names"):
+        training.LoraSpec(rank=4, alpha=8, target_modules="q_proj")  # type: ignore[arg-type]
+
+
+def test_lora_spec_survives_a_round_trip_through_json() -> None:
+    """The SLURM array's actual use: write the config out, read it back, re-check.
+
+    `as_history_block` widens target_modules to a list for JSON, which is exactly
+    what the constructor refuses, so the inverse has to be a real method rather
+    than `LoraSpec(**block)`. Without this test the array PR meets that
+    AssertionError under time pressure, and the obvious fix is to loosen the one
+    guard that catches a bare-string target_modules.
+    """
+    spec = training.LoraSpec(rank=8, alpha=16, target_modules=("q_proj", "v_proj"))
+
+    restored = training.LoraSpec.from_history_block(
+        json.loads(json.dumps(spec.as_history_block()))
+    )
+
+    assert restored == spec
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"rank": 8, "alpha": 16},
+        {"rank": 8, "alpha": 16, "target_modules": ["q_proj"], "dropout": 0.1},
+    ],
+)
+def test_lora_spec_rejects_a_block_with_the_wrong_keys(block: dict[str, Any]) -> None:
+    """A field silently dropped or ignored is a run configured other than it says."""
+    with pytest.raises(AssertionError, match="expected keys"):
+        training.LoraSpec.from_history_block(block)
+
+
+def test_history_records_the_adapter_config_as_one_block() -> None:
+    """One nested block, so a manifest reader finds the config in one place."""
+    _, _, history = run()
+    assert history["lora"] == {
+        "rank": 4,
+        "alpha": 8,
+        "target_modules": ["q_proj", "v_proj"],
+    }
+
+
+# --- What the fixture itself can detect ----------------------------------------
+
+
+@pytest.mark.parametrize("position", [-1, len(WILDTYPE)])
+def test_the_encoder_stub_makes_a_special_token_read_loud(position: int) -> None:
+    """A guard on the guard: reading BOS or EOS must produce POISON, not a vector.
+
+    `validate_positions` rejects both of these positions before training sees
+    them, so this reaches `_encode_batch` directly to get past it. The point is
+    not that the readout is wrong, it is that this fixture can *tell*. Before
+    issue #14 it could not: an unpoisoned stub returns a plausible vector from a
+    padding slot, which is how the missing position guard survived PR #13's
+    review. If someone drops the poisoning, this fails.
+    """
+    encoder = tiny_bundle()
+
+    out = training._encode_batch(encoder, [WILDTYPE], [position], "at_position", None)
+
+    assert (out < POISON / 2).all()
+
+
+# --- The mean readout on the LoRA path -----------------------------------------
+
+
+def test_mean_readout_pools_exactly_the_residues() -> None:
+    """Hand-computed against the stub's own output, so the mask is pinned exactly.
+
+    Poisoning makes the failure unmissable rather than merely detectable: a mask
+    that covered BOS, EOS or a padding slot lands near POISON instead of a few
+    percent off.
+    """
+    import torch
+
+    encoder = tiny_bundle()
+    sequences = [WILDTYPE, WILDTYPE[:9]]
+
+    _, _, tokens = encoder.batch_converter(
+        [(str(index), sequence) for index, sequence in enumerate(sequences)]
+    )
+    with torch.no_grad():
+        representations = encoder.model(tokens, repr_layers=[encoder.repr_layer])[
+            "representations"
+        ][encoder.repr_layer]
+        expected = torch.stack(
+            [
+                representations[row, 1 : len(sequence) + 1].mean(dim=0)
+                for row, sequence in enumerate(sequences)
+            ]
+        )
+        out = training._encode_batch(encoder, sequences, None, "mean", None)
+
+    torch.testing.assert_close(out, expected)
+
+
+def test_mean_readout_trains_end_to_end_on_ragged_lengths() -> None:
+    """The only path exercising the `positions is None` branch of the batch loop."""
+    _, _, history = run(
+        max_epochs=8,
+        readout="mean",
+        train_data=ragged_split(24, seed=0),
+        val_data=ragged_split(8, seed=1),
+    )
+    assert history["readout"] == "mean"
+    assert history["train_loss"][-1] < history["train_loss"][0]
+
+
+def test_mean_readout_rejects_positions() -> None:
+    """Positions the readout cannot honour are an error, not something ignored."""
+    with pytest.raises(AssertionError, match="cannot honour"):
+        run(readout="mean", train_data=toy_split(24, seed=0))
 
 
 def test_lora_attaches_to_the_named_modules() -> None:
@@ -248,7 +435,11 @@ def test_rejects_a_target_module_that_matches_nothing() -> None:
     a plausible number, which would be rung 2's result filed under rung 3.
     """
     with pytest.raises(ValueError):
-        run(target_modules=("no_such_projection",))
+        run(
+            lora=training.LoraSpec(
+                rank=4, alpha=8, target_modules=("no_such_projection",)
+            )
+        )
 
 
 def test_rejects_mismatched_targets_and_sequences() -> None:
@@ -284,10 +475,8 @@ def test_at_position_readout_requires_positions() -> None:
         run(train_data=without)
 
 
-@pytest.mark.parametrize("rank", [0, -1])
-def test_rejects_a_nonpositive_rank(rank: int) -> None:
-    with pytest.raises(AssertionError):
-        run(lora_rank=rank)
+# A nonpositive rank is rejected by LoraSpec's own constructor now, so it is
+# tested there rather than here: the run never starts, which is the point.
 
 
 def test_train_points_at_train_lora_rather_than_raising_blindly() -> None:
@@ -376,9 +565,6 @@ def test_the_seed_changes_the_batch_order() -> None:
 
 
 # --- Difference-at-position, the third pre-registered readout ------------------
-
-
-WILDTYPE = "MKTFFVLLLACDEFGHIKLM"
 
 
 def difference_split(count: int, seed: int) -> training.VariantSplit:

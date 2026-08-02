@@ -17,6 +17,12 @@ biotp = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The test modules share their encoder stubs via `from conftest import ...`, see
+# tests/conftest.py. That resolves under the default prepend import mode as a
+# side effect of `tests/` having no __init__.py, and would stop resolving under
+# --import-mode=importlib. Putting it on the path explicitly makes the import a
+# stated arrangement rather than an accident of the default.
+pythonpath = ["tests"]
 # Network tests download model checkpoints, so they are opt-in: run them with
 # `pytest -m network`. The default suite stays fast and works offline. CI opts
 # back in, in .github/workflows/embedding-anchor.yml, so the frozen-reference
