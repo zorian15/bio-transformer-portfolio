@@ -53,3 +53,9 @@ htmlcov/
 # 324 of them for rung 3; `--aggregate` combines them into <rung>.csv, which
 # is the tracked artifact. The shards are intermediates.
 *_shards/
+
+# SLURM stdout/stderr. The directory is tracked (see slurm-logs/.gitkeep)
+# because SLURM will not create it and a job whose --output path is missing
+# produces no output at all.
+slurm-logs/*
+!slurm-logs/.gitkeep

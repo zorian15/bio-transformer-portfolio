@@ -194,6 +194,8 @@ Each task writes `results/lora_shards/<configuration>.csv` and nothing else; `--
 
 If submission is rejected for accounting, add `#SBATCH --account=<account>` to `submit-finetune.sh`; the templates deliberately omit it.
 
+Submit from the repo root. SLURM writes each task's stdout and stderr to `slurm-logs/<jobname>-<arrayjob>_<task>.out`, resolved relative to the submitting directory. That directory is tracked via `slurm-logs/.gitkeep` and its contents are gitignored: SLURM resolves `--output` before the job script runs, so it will not create the path itself, and a job pointed at a missing directory produces no output at all.
+
 ### Watching it, and finishing
 
 ```bash

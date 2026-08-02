@@ -5,7 +5,11 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
-#SBATCH --output=slurm-%x-%j.out
+# Into slurm-logs/, which is tracked but whose contents are gitignored.
+# SLURM resolves this path before the script runs and will not create the
+# directory, so it is kept in the repo by slurm-logs/.gitkeep. Paths are
+# relative to the submitting directory, so submit from the repo root.
+#SBATCH --output=slurm-logs/%x-%j.out
 # Alternatives: 'short' for quick jobs; 'chorus' for L40S (48 GB) on the largest
 # ESM-2 sizes. Check limits with: scontrol show partition <name>.
 # If a job is rejected for QOS, add a line like: #SBATCH --qos=normal

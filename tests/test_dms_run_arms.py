@@ -908,3 +908,27 @@ def test_the_mean_readout_split_carries_no_positions() -> None:
     assert mean.positions is None
     assert at_position.positions == frame["position"].tolist()
     assert len(mean.sequences) == len(frame)
+
+
+def test_slurm_output_goes_to_a_tracked_but_ignored_directory() -> None:
+    """SLURM resolves --output before the job runs and will not create the path.
+
+    Three things have to agree or a job silently produces no output at all: the
+    batch scripts write into the directory, the directory survives a fresh clone,
+    and its contents stay out of git. A mkdir inside the script would be too late
+    to help.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    directory = "slurm-logs"
+
+    assert (repo_root / directory / ".gitkeep").is_file(), (
+        f"{directory}/.gitkeep is what makes the directory exist in a clone; "
+        "without it SLURM has nowhere to write and the job produces no output"
+    )
+    for script in ("submit-finetune.sh", "submit-embed.sh"):
+        text = (repo_root / "slurm" / script).read_text()
+        assert f"--output={directory}/" in text, f"{script} writes outside {directory}/"
+
+    ignored = (repo_root / ".gitignore").read_text().splitlines()
+    assert f"{directory}/*" in [line.strip() for line in ignored]
+    assert f"!{directory}/.gitkeep" in [line.strip() for line in ignored]
