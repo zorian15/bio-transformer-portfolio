@@ -21,9 +21,19 @@ position, so a model can learn site-specific effects and score well without
 transferring anything. Under `modulo` and `contiguous` the folds are
 position-disjoint by construction, which this script asserts rather than trusts.
 
-**Rung 3 is one configuration per invocation** so the SLURM array in the third PR
-can map a task id onto it directly. `--all` loops the same entry point locally,
-which is what the smoke test and the cheap rungs use.
+**Rung 3 is one configuration per invocation**, and one SLURM array task is one
+configuration: 324 of them, being 3 assays x 3 schemes x 3 readouts x 4 training
+sizes x 3 seeds. `--task-id` maps an array index onto a configuration through
+`grid`, so the mapping is Python that a test can reach rather than arithmetic in
+a batch script. `--all` loops the same entry point locally, which is what the
+smoke test and the cheap rungs use.
+
+**One configuration writes one file.** A task writes its own shard under
+`<results-dir>/<rung>_shards/`, and `--aggregate` combines them into
+`<rung>.csv` afterwards. The earlier behavior, read-modify-write against a single
+CSV, silently lost rows when two tasks finished close together: both read the
+pre-existing file and both wrote it, and the loser disappeared into a well-formed
+CSV with fewer rows than jobs that reported success.
 
 Run from the repo root, after prepare_data.py:
 
@@ -32,6 +42,10 @@ Run from the repo root, after prepare_data.py:
     python projects/dms-benchmark/scripts/run_arms.py --rung lora \
         --assay R1AB_SARS2_Flynn_2022 --scheme fold_modulo_5 \
         --readout at_position --n 128 --seed 0
+
+    # As the array runs it, then once afterwards to combine the shards:
+    python projects/dms-benchmark/scripts/run_arms.py --rung lora --task-id 0
+    python projects/dms-benchmark/scripts/run_arms.py --rung lora --aggregate
 """
 
 from __future__ import annotations
@@ -491,6 +505,113 @@ def grid(rung: str, assays: tuple[str, ...]) -> Iterator[Config]:
                         )
 
 
+def grid_size(rung: str, assays: tuple[str, ...]) -> int:
+    """How many configurations this rung has, which is the SLURM array bound.
+
+    Exists so the bound is derived from the same `grid` the tasks are indexed
+    into, rather than retyped into the sbatch and left to drift when an axis
+    changes. An array bound set too low finishes cleanly having skipped
+    configurations, which is a silent shortfall rather than an error.
+    """
+    return len(list(grid(rung, assays)))
+
+
+def config_for_task(rung: str, assays: tuple[str, ...], task_id: int) -> Config:
+    """The configuration a SLURM array task index maps onto.
+
+    Zero-based, matching `#SBATCH --array=0-<size-1>`. The mapping is `grid`'s
+    own order, which is deterministic, so this adds no ordering of its own.
+
+    Deliberately Python rather than argv arithmetic in the batch script: an
+    off-by-one in a shell expression is invisible until the results are short by
+    one configuration, and nothing in a batch file is reachable by a test.
+    """
+    configs = list(grid(rung, assays))
+    assert 0 <= task_id < len(configs), (
+        f"task id {task_id} is outside the {rung} grid, which has "
+        f"{len(configs)} configurations (valid ids 0 to {len(configs) - 1}); "
+        "check the --array bound in the sbatch against --grid-size"
+    )
+    return configs[task_id]
+
+
+def shard_name(config: Config) -> str:
+    """Filename holding one configuration's result.
+
+    Keyed by the configuration rather than by the array task id, for two
+    reasons. A rerun of the same configuration overwrites its own shard, so a
+    requeued or manually repeated task is idempotent rather than duplicating a
+    row. And the name stays meaningful if the grid is ever reordered or extended,
+    where `task-7.csv` would quietly come to describe something else.
+
+    Every field of Config appears, so two configurations cannot collide.
+    """
+    return (
+        f"{config.rung}-{config.assay}-{config.scheme}-{config.readout}"
+        f"-n{config.n}-seed{config.seed}-{config.checkpoint}.csv"
+    )
+
+
+def shard_dir(results_dir: Path, rung: str) -> Path:
+    """Where one rung's per-task shards live, beside the aggregated CSV."""
+    return results_dir / f"{rung}_shards"
+
+
+def aggregate_shards(
+    results_dir: Path, rung: str, expected: list[Config]
+) -> pd.DataFrame:
+    """Combine per-task shards into one frame, refusing anything incomplete.
+
+    Every assertion here exists because the alternative is a well-formed CSV that
+    under-reports. A preempted or OOM-killed array task leaves no shard, and
+    aggregating whatever happens to be present would produce a file that looks
+    finished, with no downstream check able to tell.
+
+    Args:
+        results_dir: the directory holding `<rung>_shards/`.
+        rung: which rung to aggregate.
+        expected: every configuration that should have produced a shard.
+
+    Returns:
+        One row per configuration, in `grid` order.
+    """
+    directory = shard_dir(results_dir, rung)
+    assert directory.is_dir(), (
+        f"no shard directory at {directory}; nothing to aggregate. Run the "
+        f"array first, or point --results-dir at where its tasks wrote."
+    )
+
+    wanted = {shard_name(config): config for config in expected}
+    found = {path.name for path in directory.glob("*.csv")}
+
+    missing = sorted(set(wanted) - found)
+    assert not missing, (
+        f"{len(missing)} of {len(wanted)} configuration(s) produced no shard, so "
+        f"aggregating now would silently under-report. Missing: "
+        f"{missing[:10]}{f' and {len(missing) - 10} more' if len(missing) > 10 else ''}"
+    )
+
+    # A shard the grid does not contain is a leftover from an earlier grid, and
+    # including it would report a configuration this run never asked for.
+    unexpected = sorted(found - set(wanted))
+    assert not unexpected, (
+        f"{len(unexpected)} shard(s) in {directory} are not in this grid, so the "
+        f"directory mixes two runs. Remove them or use a fresh --results-dir: "
+        f"{unexpected[:10]}"
+    )
+
+    frames = []
+    for name in sorted(wanted):
+        frame = pd.read_csv(directory / name)
+        assert len(frame) == 1, (
+            f"shard {name} holds {len(frame)} rows; one configuration is one row, "
+            "so this file was written by something other than a single task"
+        )
+        frames.append(frame)
+
+    return pd.concat(frames, ignore_index=True)
+
+
 def configuration_records(rung: str) -> dict[str, Any]:
     """The manifest entries describing how this rung was configured.
 
@@ -519,6 +640,21 @@ def main() -> int:
     parser.add_argument(
         "--all", action="store_true", help="loop the whole rung locally"
     )
+    parser.add_argument(
+        "--task-id",
+        type=int,
+        help="zero-based index into this rung's grid; one SLURM array task",
+    )
+    parser.add_argument(
+        "--grid-size",
+        action="store_true",
+        help="print this rung's configuration count and exit, to size --array",
+    )
+    parser.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="combine per-task shards into <rung>.csv and exit",
+    )
     parser.add_argument("--assay")
     parser.add_argument("--scheme", choices=SCHEMES)
     parser.add_argument("--readout", choices=list(LORA_READOUTS))
@@ -532,6 +668,17 @@ def main() -> int:
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
     args = parser.parse_args()
 
+    if args.grid_size:
+        # Handled before run_context on purpose. This is a query rather than a
+        # run: it changes nothing, so it should not leave a manifest in logs/,
+        # and more importantly run_context logs to stdout, which would put a
+        # dozen log lines in front of the number. The sbatch reads this with
+        # command substitution to size --array, so stdout has to hold the number
+        # and nothing else.
+        _, metadata = load_inputs(args.data_root)
+        print(grid_size(args.rung, tuple(sorted(metadata["assays"]))))
+        return 0
+
     with run_context("dms-run-arms", log_dir=args.log_dir, params=vars(args)) as run:
         with run.step("load prepared inputs"):
             table, metadata = load_inputs(args.data_root)
@@ -542,7 +689,21 @@ def main() -> int:
         for key, value in configuration_records(args.rung).items():
             run.record(key, value)
 
-        if args.all:
+        if args.aggregate:
+            with run.step("aggregate shards"):
+                expected = list(grid(args.rung, assays))
+                frame = aggregate_shards(args.results_dir, args.rung, expected)
+                destination = args.results_dir / f"{args.rung}.csv"
+                frame.to_csv(destination, index=False)
+                log.info(f"wrote {destination} ({len(frame)} rows)")
+            run.record("configurations_aggregated", len(frame))
+            run.record("median_spearman", float(np.median(frame["spearman"])))
+            return 0
+
+        if args.task_id is not None:
+            configs = [config_for_task(args.rung, assays, args.task_id)]
+            run.record("task_id", args.task_id)
+        elif args.all:
             configs = list(grid(args.rung, assays))
         else:
             for name in ("assay", "scheme", "seed"):
@@ -586,25 +747,24 @@ def main() -> int:
                 log.info("    spearman=%.4f", rows[-1]["spearman"])
 
         with run.step("write results"):
-            args.results_dir.mkdir(parents=True, exist_ok=True)
-            frame = pd.DataFrame(rows)
-            destination = args.results_dir / f"{args.rung}.csv"
-            if not args.all and destination.exists():
-                frame = pd.concat([pd.read_csv(destination), frame], ignore_index=True)
-                frame = frame.drop_duplicates(
-                    subset=[
-                        "rung",
-                        "assay",
-                        "scheme",
-                        "readout",
-                        "n",
-                        "seed",
-                        "checkpoint",
-                    ],
-                    keep="last",
-                )
-            frame.to_csv(destination, index=False)
-            log.info(f"wrote {destination} ({len(frame)} rows)")
+            if args.all:
+                # One process owns the file, so there is nothing to race with.
+                args.results_dir.mkdir(parents=True, exist_ok=True)
+                destination = args.results_dir / f"{args.rung}.csv"
+                pd.DataFrame(rows).to_csv(destination, index=False)
+                log.info(f"wrote {destination} ({len(rows)} rows)")
+            else:
+                # One configuration, one file. Never read-modify-write a shared
+                # CSV here: this is the path a SLURM array takes, and two tasks
+                # finishing close together would both read the old file and both
+                # write it, dropping a row into a file that still looks complete.
+                # `--aggregate` combines the shards once every task has finished.
+                directory = shard_dir(args.results_dir, args.rung)
+                directory.mkdir(parents=True, exist_ok=True)
+                for config, row in zip(configs, rows):
+                    destination = directory / shard_name(config)
+                    pd.DataFrame([row]).to_csv(destination, index=False)
+                    log.info(f"wrote {destination}")
 
         run.record("configurations_run", len(configs))
         run.record("median_spearman", float(np.median([r["spearman"] for r in rows])))

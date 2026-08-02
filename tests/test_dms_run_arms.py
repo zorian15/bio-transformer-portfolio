@@ -250,3 +250,197 @@ def test_the_adapter_block_survives_a_real_manifest(tmp_path: Path) -> None:
     assert LoraSpec.from_history_block(manifest["records"]["lora"]) == (
         run_arms.LORA_SPEC
     )
+
+
+# --- SLURM array: task mapping and per-task result shards -----------------------
+#
+# The array writes one file per configuration instead of read-modify-writing a
+# single CSV. That pattern lost rows: `not args.all` is the array path, so two
+# tasks finishing close together both read the pre-existing file and both wrote
+# it, and the loser vanished into a well-formed CSV with fewer rows than jobs
+# that reported success. Nothing cross-checked the two, which is the same shape
+# as the rest of this project's hazards.
+
+
+def lora_grid(assays: tuple[str, ...] = ("ASSAY_A", "ASSAY_B")) -> list:
+    return list(run_arms.grid("lora", assays))
+
+
+def write_shard(directory: Path, config, spearman: float = 0.5) -> None:
+    """One configuration's result, as a task would leave it behind."""
+    directory.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "rung": config.rung,
+                "assay": config.assay,
+                "scheme": config.scheme,
+                "readout": config.readout,
+                "n": config.n,
+                "seed": config.seed,
+                "checkpoint": config.checkpoint,
+                "spearman": spearman,
+            }
+        ]
+    ).to_csv(directory / run_arms.shard_name(config), index=False)
+
+
+def test_a_task_id_maps_onto_the_grid_configuration() -> None:
+    """The mapping lives in Python so it can be tested, not in the sbatch."""
+    assays = ("ASSAY_A", "ASSAY_B")
+    configs = lora_grid(assays)
+
+    for index in (0, 1, len(configs) // 2, len(configs) - 1):
+        assert run_arms.config_for_task("lora", assays, index) == configs[index]
+
+
+@pytest.mark.parametrize("offset", [-1, 0])
+def test_a_task_id_outside_the_grid_is_rejected(offset: int) -> None:
+    """An off-by-one in the sbatch --array bound must not silently rerun task 0."""
+    assays = ("ASSAY_A", "ASSAY_B")
+    out_of_range = len(lora_grid(assays)) if offset == 0 else offset
+
+    with pytest.raises(AssertionError, match="outside the .* grid"):
+        run_arms.config_for_task("lora", assays, out_of_range)
+
+
+def test_every_configuration_gets_its_own_shard_name() -> None:
+    """The property the whole scheme rests on: no two tasks write the same file."""
+    configs = lora_grid()
+    names = [run_arms.shard_name(config) for config in configs]
+
+    assert len(set(names)) == len(configs)
+
+
+def test_a_shard_name_depends_on_the_configuration_not_its_index() -> None:
+    """Keyed by config so a rerun overwrites its own shard and retries are idempotent.
+
+    Naming shards `task-<id>.csv` would tie them to grid ordering, and a reordered
+    grid would silently make an old shard describe a different configuration.
+    """
+    config = lora_grid()[7]
+    same = run_arms.Config(
+        config.rung,
+        config.assay,
+        config.scheme,
+        config.readout,
+        config.n,
+        config.seed,
+        config.checkpoint,
+    )
+
+    assert run_arms.shard_name(same) == run_arms.shard_name(config)
+
+
+def test_two_tasks_never_share_a_destination(tmp_path: Path) -> None:
+    """The race, stated directly: distinct configurations, distinct paths."""
+    first, second = lora_grid()[0], lora_grid()[1]
+    directory = run_arms.shard_dir(tmp_path, "lora")
+
+    assert directory / run_arms.shard_name(first) != directory / run_arms.shard_name(
+        second
+    )
+
+
+def test_aggregate_reconstructs_every_configuration(tmp_path: Path) -> None:
+    configs = lora_grid()
+    directory = run_arms.shard_dir(tmp_path, "lora")
+    for config in configs:
+        write_shard(directory, config)
+
+    frame = run_arms.aggregate_shards(tmp_path, "lora", configs)
+
+    assert len(frame) == len(configs)
+    assert set(frame["assay"]) == {"ASSAY_A", "ASSAY_B"}
+
+
+def test_aggregate_names_the_configurations_that_produced_nothing(
+    tmp_path: Path,
+) -> None:
+    """A silently short CSV is the failure this whole change exists to prevent.
+
+    A preempted or OOM-killed array task leaves no shard. Aggregating what
+    happens to be present would produce a well-formed file that under-reports,
+    and nothing downstream would notice.
+    """
+    configs = lora_grid()
+    directory = run_arms.shard_dir(tmp_path, "lora")
+    for config in configs[1:]:
+        write_shard(directory, config)
+
+    with pytest.raises(AssertionError, match="produced no shard"):
+        run_arms.aggregate_shards(tmp_path, "lora", configs)
+
+
+def test_aggregate_rejects_a_shard_from_another_grid(tmp_path: Path) -> None:
+    """A stale shard would report a configuration this grid does not contain."""
+    configs = lora_grid()
+    directory = run_arms.shard_dir(tmp_path, "lora")
+    for config in configs:
+        write_shard(directory, config)
+    stale = run_arms.Config(
+        "lora", "ASSAY_GONE", "fold_modulo_5", "mean", 32, 0, "ckpt"
+    )
+    write_shard(directory, stale)
+
+    with pytest.raises(AssertionError, match="not in this grid"):
+        run_arms.aggregate_shards(tmp_path, "lora", configs)
+
+
+def test_aggregate_rejects_a_shard_holding_more_than_one_row(tmp_path: Path) -> None:
+    """One configuration is one row; anything else means a task wrote the wrong file."""
+    configs = lora_grid()
+    directory = run_arms.shard_dir(tmp_path, "lora")
+    for config in configs:
+        write_shard(directory, config)
+    doubled = pd.concat(
+        [pd.read_csv(directory / run_arms.shard_name(configs[0]))] * 2,
+        ignore_index=True,
+    )
+    doubled.to_csv(directory / run_arms.shard_name(configs[0]), index=False)
+
+    with pytest.raises(AssertionError, match="holds 2 rows"):
+        run_arms.aggregate_shards(tmp_path, "lora", configs)
+
+
+def test_aggregate_without_a_shard_directory_fails_loudly(tmp_path: Path) -> None:
+    """Rather than writing an empty results file that looks like a finished run."""
+    with pytest.raises(AssertionError, match="no shard directory"):
+        run_arms.aggregate_shards(tmp_path, "lora", lora_grid())
+
+
+def test_grid_size_matches_the_grid_it_indexes() -> None:
+    """The --array bound and the --task-id mapping must come from one source.
+
+    A bound retyped into the sbatch and left behind when an axis changes finishes
+    cleanly having skipped configurations, which is a silent shortfall rather
+    than a failure. --aggregate is the backstop; this is the prevention.
+    """
+    assays = ("ASSAY_A", "ASSAY_B")
+    for rung in run_arms.RUNGS:
+        assert run_arms.grid_size(rung, assays) == len(
+            list(run_arms.grid(rung, assays))
+        )
+
+
+def test_the_documented_lora_array_bound_is_the_real_one() -> None:
+    """slurm/submit-finetune.sh hardcodes --array=0-323; this is what pins it.
+
+    Three real assays, so the number in the batch script and the number the code
+    produces cannot drift apart without a test noticing.
+    """
+    real_assays = (
+        "A4GRB6_PSEAI_Chen_2020",
+        "CCR5_HUMAN_Gill_2023",
+        "R1AB_SARS2_Flynn_2022",
+    )
+    size = run_arms.grid_size("lora", real_assays)
+
+    assert size == 324
+    sbatch = (
+        Path(__file__).resolve().parents[1] / "slurm" / "submit-finetune.sh"
+    ).read_text()
+    assert f"--array=0-{size - 1}%" in sbatch, (
+        f"slurm/submit-finetune.sh does not declare --array=0-{size - 1}; the grid "
+        "and the batch script disagree about how many tasks there are"
+    )
