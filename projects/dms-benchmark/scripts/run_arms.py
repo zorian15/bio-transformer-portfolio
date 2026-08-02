@@ -678,12 +678,24 @@ def configuration_records(rung: str) -> dict[str, Any]:
     script is, which is how the gap this closes went unnoticed.
     """
     assert rung in RUNGS, f"unknown rung {rung!r}; expected one of {sorted(RUNGS)}"
+
+    records: dict[str, Any] = {}
+    if rung in ("frozen", "lora"):
+        # Both supervised rungs, because the point of recording it is that the
+        # two are comparable only while these agree. A manifest that named the
+        # optimiser for one rung and not the other would be worse than silent.
+        records["supervised"] = {
+            "batch_size": SUPERVISED_BATCH_SIZE,
+            "learning_rate": SUPERVISED_LEARNING_RATE,
+            "max_epochs": MAX_EPOCHS,
+        }
     if rung != "lora":
-        return {}
+        return records
     # One nested block rather than three loose keys, matching the shape
     # train_lora reports in its history. Read it back with
     # LoraSpec.from_history_block.
-    return {"lora": LORA_SPEC.as_history_block()}
+    records["lora"] = LORA_SPEC.as_history_block()
+    return records
 
 
 def main() -> int:

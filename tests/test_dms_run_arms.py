@@ -199,15 +199,23 @@ def test_a_small_validation_fold_is_left_alone() -> None:
 
 
 def test_rung_three_records_the_adapter_configuration() -> None:
-    assert run_arms.configuration_records("lora") == {
-        "lora": {"rank": 8, "alpha": 16, "target_modules": ["q_proj", "v_proj"]}
+    """The adapter block specifically; rung 3 also records its optimiser."""
+    assert run_arms.configuration_records("lora")["lora"] == {
+        "rank": 8,
+        "alpha": 16,
+        "target_modules": ["q_proj", "v_proj"],
     }
 
 
 @pytest.mark.parametrize("rung", ["zero_shot", "frozen"])
 def test_the_other_rungs_record_no_adapter_configuration(rung: str) -> None:
-    """A block describing adapters would be a lie on a rung that attaches none."""
-    assert run_arms.configuration_records(rung) == {}
+    """A block describing adapters would be a lie on a rung that attaches none.
+
+    Asserts the absence of the adapter block rather than an empty dict: the
+    frozen rung legitimately records its optimiser, and an equality check here
+    would have made adding that look like a regression.
+    """
+    assert "lora" not in run_arms.configuration_records(rung)
 
 
 def test_every_rung_has_a_decision_recorded_for_it() -> None:
@@ -1028,3 +1036,35 @@ def test_no_rung_specific_optimiser_constants_survive() -> None:
             "supervised rungs now share SUPERVISED_LEARNING_RATE and "
             "SUPERVISED_BATCH_SIZE"
         )
+
+
+@pytest.mark.parametrize("rung", ["frozen", "lora"])
+def test_the_manifest_records_the_supervised_optimiser(rung: str) -> None:
+    """`train` records batch_size in its history, and nothing forwarded it.
+
+    The field was justified as the only way a manifest reader recovers the
+    value, and that was false: neither runner puts it in the returned row and no
+    run.record picked it up. Recorded for both supervised rungs, because the
+    reason to record it at all is that the two are comparable only while they
+    agree.
+    """
+    supervised = run_arms.configuration_records(rung)["supervised"]
+
+    assert supervised["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
+    assert supervised["learning_rate"] == run_arms.SUPERVISED_LEARNING_RATE
+
+
+def test_zero_shot_records_no_optimiser() -> None:
+    """Rung 1 trains nothing, so an optimiser block would be a lie."""
+    assert "supervised" not in run_arms.configuration_records("zero_shot")
+
+
+def test_the_shared_batch_size_matches_the_committed_results() -> None:
+    """Provenance, the same argument that pins Project 1 at 256.
+
+    `frozen.csv` was regenerated at this batch size. The rung tests either side
+    assert the two rungs agree, which stays green if both move together, and
+    both moving together silently invalidates the committed numbers.
+    """
+    assert run_arms.SUPERVISED_BATCH_SIZE == 8
+    assert run_arms.SUPERVISED_LEARNING_RATE == 1e-4
