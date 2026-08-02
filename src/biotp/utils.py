@@ -7,6 +7,7 @@ GPU node (CUDA), the MacBook (Apple MPS), or CPU.
 
 from __future__ import annotations
 
+import math
 import os
 import random
 
@@ -61,7 +62,7 @@ def clamp_unit_interval(value: float) -> float:
     Raises:
         ValueError: If the value is NaN, which cannot be meaningfully clamped.
     """
-    if value != value:
+    if math.isnan(value):
         raise ValueError("cannot clamp NaN to the unit interval")
     if value < 0.0:
         return 0.0

@@ -100,3 +100,21 @@ def test_set_seed_sets_pythonhashseed() -> None:
 
 def test_clamp_unit_interval_passes_through_interior_value() -> None:
     assert clamp_unit_interval(0.5) == 0.5
+
+
+def test_clamp_unit_interval_clamps_below_zero() -> None:
+    assert clamp_unit_interval(-0.2) == 0.0
+
+
+def test_clamp_unit_interval_clamps_above_one() -> None:
+    assert clamp_unit_interval(1.3) == 1.0
+
+
+def test_clamp_unit_interval_preserves_closed_endpoints() -> None:
+    assert clamp_unit_interval(0.0) == 0.0
+    assert clamp_unit_interval(1.0) == 1.0
+
+
+def test_clamp_unit_interval_rejects_nan() -> None:
+    with pytest.raises(ValueError, match="NaN"):
+        clamp_unit_interval(float("nan"))
