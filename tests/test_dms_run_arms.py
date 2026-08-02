@@ -11,7 +11,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -944,32 +944,76 @@ def test_slurm_output_goes_to_a_tracked_but_ignored_directory() -> None:
 # Sharing the constants fixes it; this is what stops them drifting apart again.
 
 
-def supervised_call_source(function_name: str) -> str:
-    """The source of one rung's runner, for checking what it passes to training."""
-    import inspect
+def capture_optimiser(monkeypatch, target: str) -> dict:
+    """Replace `target` in run_arms with a stub that records its keyword arguments.
 
-    return inspect.getsource(getattr(run_arms, function_name))
-
-
-@pytest.mark.parametrize("rung", ["run_frozen", "run_lora"])
-def test_both_supervised_rungs_read_the_shared_optimiser(rung: str) -> None:
-    """Neither may name its own learning rate or batch size.
-
-    Checked in the source rather than by running the rungs, which would need a
-    GPU and a checkpoint. The failure this guards against is a constant quietly
-    reintroduced beside the shared one, which no numerical test would catch until
-    the delta had already moved.
+    Behavioural rather than source-inspecting. An earlier version of this test
+    asserted that `inspect.getsource` contained the literal string
+    "lr=SUPERVISED_LEARNING_RATE", which would have failed a legitimate refactor
+    that hoisted the shared arguments into a helper, and would have passed a
+    constant merely prefixed the same way. This records the values that actually
+    reach the training call.
     """
-    source = supervised_call_source(rung)
+    seen: dict = {}
 
-    assert "lr=SUPERVISED_LEARNING_RATE" in source, (
-        f"{rung} does not pass SUPERVISED_LEARNING_RATE; the two supervised "
-        "rungs must optimise identically or their delta is not attributable"
+    def stub(*args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        history = {"best_epoch": 0, "epochs_run": 1, "trainable_encoder_parameters": 1}
+        return (None, None, history) if target == "train_lora" else (None, history)
+
+    monkeypatch.setattr(run_arms, target, stub)
+    return seen
+
+
+def tiny_assay_and_splits(width: int = 6):
+    """A minimal assay and split triple, enough to reach the training call."""
+    frame = variant_frame(count=9, length=20)
+    splits = run_arms.Splits(
+        test=np.arange(0, 3), val=np.arange(3, 6), train_pool=np.arange(6, 9)
     )
-    assert "batch_size=SUPERVISED_BATCH_SIZE" in source, (
-        f"{rung} does not pass SUPERVISED_BATCH_SIZE; patience is counted in "
-        "epochs, so a different batch size is a different optimisation budget"
+    return frame, splits, np.arange(6, 9)
+
+
+def test_rung_two_trains_with_the_shared_optimiser(monkeypatch) -> None:
+    """The values reaching `train`, not the text of the call that makes it."""
+    seen = capture_optimiser(monkeypatch, "train")
+    monkeypatch.setattr(
+        run_arms, "assay_features", lambda *a, **k: np.zeros((9, 4), dtype=np.float32)
     )
+    # Non-constant: spearman refuses a constant input, and it runs before
+    # the assertion this test is about.
+    monkeypatch.setattr(run_arms, "predict", lambda *a, **k: np.arange(3, dtype=float))
+    frame, splits, rows = tiny_assay_and_splits()
+
+    run_arms.run_frozen(
+        frame, "ASSAY_A", splits, rows, "mean", "M" * 20, "ckpt", Path("/tmp")
+    )
+
+    assert seen["lr"] == run_arms.SUPERVISED_LEARNING_RATE
+    assert seen["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
+
+
+def test_rung_three_trains_with_the_same_optimiser(monkeypatch) -> None:
+    """Both rungs must reach their trainer with identical optimiser settings.
+
+    Equal batch sizes are what make the shared epoch-counted patience a fair
+    stopping rule: an epoch is then the same number of gradient updates on both,
+    which is the property issue #33 exists to restore.
+    """
+    seen = capture_optimiser(monkeypatch, "train_lora")
+    monkeypatch.setattr(
+        run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
+    )
+    monkeypatch.setattr(run_arms, "build_head", lambda *a, **k: None)
+    monkeypatch.setattr(
+        run_arms, "predict_lora", lambda *a, **k: np.arange(3, dtype=float)
+    )
+    frame, splits, rows = tiny_assay_and_splits()
+
+    run_arms.run_lora(frame, splits, rows, "mean", "M" * 20, "ckpt", 0)
+
+    assert seen["lr"] == run_arms.SUPERVISED_LEARNING_RATE
+    assert seen["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
 
 
 def test_no_rung_specific_optimiser_constants_survive() -> None:
@@ -984,18 +1028,3 @@ def test_no_rung_specific_optimiser_constants_survive() -> None:
             "supervised rungs now share SUPERVISED_LEARNING_RATE and "
             "SUPERVISED_BATCH_SIZE"
         )
-
-
-def test_an_epoch_is_the_same_number_of_updates_on_both_rungs() -> None:
-    """The property that makes shared epoch-patience a fair stopping rule.
-
-    Equal batch sizes and equal training-set sizes mean equal updates per epoch,
-    so "ten epochs without improvement" means the same thing on both rungs. This
-    is the statement the fix actually rests on.
-    """
-    import math
-
-    for n in run_arms.TRAINING_SIZES:
-        frozen_updates = math.ceil(n / run_arms.SUPERVISED_BATCH_SIZE)
-        lora_updates = math.ceil(n / run_arms.SUPERVISED_BATCH_SIZE)
-        assert frozen_updates == lora_updates, f"N={n} differs across rungs"

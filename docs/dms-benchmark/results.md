@@ -1,7 +1,7 @@
 # Results
 
-**Status:** rungs 1 and 2 complete, rung 3 pending. This page is updated as
-they land, and says plainly which numbers exist.
+**Status:** rungs 1, 2 and 3 complete. This page is updated as they land, and
+says plainly which numbers exist.
 
 See [Method](method.md) for the design and the
 [appendix](../appendix.md) for the machinery it assumes.
@@ -222,7 +222,8 @@ the frozen representation, fit properly?"
 | ridge − rung 2 as published | +0.0383 | 0.017 | 57% |
 | **LoRA − ridge** | **+0.0015** | **0.28** | 59% |
 
-Mean Spearman across all 324: rung 2 **0.224**, ridge **0.262**, LoRA **0.263**.
+Mean Spearman across all 324: rung 2 (as published) **0.224**, ridge **0.262**,
+LoRA **0.263**.
 
 **Against a properly-fit frozen representation, LoRA buys nothing on average.**
 The apparent +0.040 is the size of rung 2's under-fit, not the value of
@@ -274,20 +275,27 @@ schemes on `A4GRB6_PSEAI_Chen_2020`. That bounds how much any cross-scheme
 comparison can mean.
 
 **The readout ordering depends on the baseline.** Against rung 2 as published,
-the `mean` readout appears to benefit most from adaptation (+0.080). Against
+the `mean` readout appeared to benefit most from adaptation (+0.080). Against
 ridge it is the worst (−0.051), while `difference_at_position` is the best
-(+0.036, p<0.001). The `mean` readout is where rung 2 is most under-fit, not
-where LoRA helps: a mean-pooled 480-dimensional vector over a 300-residue protein
-differing at one position is badly conditioned, and a dozen full-batch Adam steps
-do not resolve it.
+(+0.036, p<0.001). Rung 2 has since been re-run with the shared optimiser (see
+above), and the ordering does not change: ridge still beats the rung-2 head by
+the most on `mean` (+0.104) and the least on `difference_at_position`, where the
+head wins (−0.031). The `mean` readout is where the rung-2 head is worst
+conditioned, not where LoRA helps: a mean-pooled 480-dimensional vector over a
+300-residue protein differing at one position is badly conditioned, and dropout
+and early stopping alone do not resolve it without weight decay, tracked as
+issue #35.
 
 ### What this rung is waiting on
 
-Rung 2 needs re-running with rung 3's optimiser, or patience redefined in
-gradient steps rather than epochs, before any delta here is attributable to
-adaptation. `frozen_ridge.csv` stays as a permanent sanity floor: it costs
-seconds once the embeddings are cached, and it is the check that catches this
-class of failure.
+Rung 2 has been re-run with rung 3's optimiser (issue #33), so an epoch-count
+difference can no longer buy the two rungs different optimisation budgets. The
+delta that survives is smaller and no longer attributable to that confound.
+What is left is a regularisation gap between the rung-2 head and a converged
+ridge fit, concentrated in the `mean` readout, tracked as issue #35.
+`frozen_ridge.csv` stays as a permanent sanity floor regardless: it costs
+seconds once the embeddings are cached, and it is the check that surfaced both
+of these.
 
 ### The cost estimate was wrong, and validation was why
 

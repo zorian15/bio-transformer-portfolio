@@ -399,3 +399,98 @@ def test_train_rejects_mismatched_features_and_labels() -> None:
             lr=1e-3,
             batch_size=training.BATCH_SIZE,
         )
+
+
+# --- The optimiser is a parameter, not a module constant ------------------------
+#
+# `train` batched at a module-level 256 while `train_lora` took its batch size as
+# an argument, and both counted early-stopping patience in epochs. An epoch was
+# therefore 5x to 25x more gradient updates on the LoRA rung, so the ladder's
+# rung-2-to-rung-3 delta mixed "adapting the encoder helped" with "rung 3
+# optimised for longer". Issue #33.
+
+
+def test_train_requires_an_explicit_batch_size() -> None:
+    """No default, so a caller cannot inherit a batch size it did not choose.
+
+    That inheritance is what let the two supervised rungs differ in their
+    optimisation budget while appearing to share a stopping rule.
+    """
+    parameter = inspect.signature(training.train).parameters["batch_size"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_train_rejects_a_nonpositive_batch_size() -> None:
+    with pytest.raises(AssertionError, match="batch_size must be positive"):
+        train_data, val_data, _ = classification_split()
+        head = training.build_head(N_FEATURES, N_CLASSES, "classification")
+        training.train(
+            head,
+            train_data,
+            val_data,
+            mode="linear_probe",
+            max_epochs=1,
+            lr=1e-3,
+            batch_size=0,
+        )
+
+
+def test_history_records_the_batch_size_it_trained_at() -> None:
+    """A manifest reader has no other way to recover it, and it changes results."""
+    train_data, val_data, _ = classification_split()
+    head = training.build_head(N_FEATURES, N_CLASSES, "classification")
+
+    _, history = training.train(
+        head,
+        train_data,
+        val_data,
+        mode="linear_probe",
+        max_epochs=2,
+        lr=1e-3,
+        batch_size=32,
+    )
+
+    assert history["batch_size"] == 32
+
+
+def updates_taken(batch_size: int) -> int:
+    """Gradient updates `train` performs over a fixed number of epochs."""
+    import torch
+
+    train_data, val_data, _ = classification_split()
+    head = training.build_head(N_FEATURES, N_CLASSES, "classification")
+    seen = 0
+    original = torch.optim.Adam.step
+
+    def counting_step(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal seen
+        seen += 1
+        return original(self, *args, **kwargs)
+
+    torch.optim.Adam.step = counting_step  # type: ignore[method-assign]
+    try:
+        set_seed(0)
+        training.train(
+            head,
+            train_data,
+            val_data,
+            mode="linear_probe",
+            max_epochs=3,
+            lr=1e-3,
+            batch_size=batch_size,
+        )
+    finally:
+        torch.optim.Adam.step = original  # type: ignore[method-assign]
+    return seen
+
+
+def test_batch_size_actually_sets_the_number_of_updates() -> None:
+    """The property the whole issue rests on, counted rather than assumed.
+
+    The training split is 180 rows. At batch 256 that is one update per epoch,
+    which is why every other test in this file, all of which pass 256, would
+    still pass against a `train` that ignored the parameter entirely and used the
+    old module constant. Twenty rows per batch must give nine.
+    """
+    assert updates_taken(256) == 3, "180 rows at batch 256 is one update per epoch"
+    assert updates_taken(20) == 27, "180 rows at batch 20 is nine updates per epoch"
