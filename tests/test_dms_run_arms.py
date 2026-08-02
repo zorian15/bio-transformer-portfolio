@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from biotp import training
 from biotp.runlog import run_context
 from biotp.training import LoraSpec
 
@@ -842,3 +843,68 @@ def test_shard_directories_are_not_committed() -> None:
         line.strip() == "*_shards/" or line.strip() == f"{directory}/"
         for line in ignored.splitlines()
     ), f".gitignore has no rule covering {directory}/"
+
+
+# --- variant_split against the guard it has to satisfy --------------------------
+#
+# The split builder and the guard that rejects a malformed split live in
+# different modules, and nothing checked them against each other. `wildtype` was
+# threaded through by readout from the start; `positions` was not, so every mean
+# configuration of rung 3 died at `_check_split` after loading a checkpoint. The
+# unit tests covered train_lora with a hand-built split, and the script tests
+# stub `evaluate`, so the one path that builds a real split never met the guard.
+
+
+def variant_frame(count: int, length: int) -> pd.DataFrame:
+    """An assay carrying the columns variant_split reads."""
+    wildtype = ("MKTFFVLLLACDEFGHIKLM" * 2)[:length]
+    rows = []
+    for index in range(count):
+        position = index % length
+        mutant = "ACDEFG"[index % 6]
+        rows.append(
+            {
+                "mutated_sequence": wildtype[:position]
+                + mutant
+                + wildtype[position + 1 :],
+                "position": position,
+                "DMS_score": float(index),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+@pytest.mark.parametrize("readout", list(run_arms.LORA_READOUTS))
+def test_variant_split_satisfies_the_guard_for_its_own_readout(readout: str) -> None:
+    """The check that was missing: build a split, then run the real guard on it.
+
+    `_check_split` is what train_lora calls first, so this reproduces the failure
+    without a model or a GPU. Against the previous code the mean case raises
+    "carries positions, but the mean readout pools every residue".
+    """
+    length = 20
+    frame = variant_frame(count=6, length=length)
+    wildtype = (
+        frame["mutated_sequence"].iloc[0]
+        if readout == "difference_at_position"
+        else None
+    )
+
+    split = run_arms.variant_split(frame, np.arange(len(frame)), readout, wildtype)
+
+    training._check_split(split, readout, length, "train")  # type: ignore[arg-type]
+
+
+def test_the_mean_readout_split_carries_no_positions() -> None:
+    """Named directly, because the guard test above would also pass if
+    variant_split returned an empty split for every readout."""
+    frame = variant_frame(count=6, length=20)
+
+    mean = run_arms.variant_split(frame, np.arange(len(frame)), "mean", None)
+    at_position = run_arms.variant_split(
+        frame, np.arange(len(frame)), "at_position", None
+    )
+
+    assert mean.positions is None
+    assert at_position.positions == frame["position"].tolist()
+    assert len(mean.sequences) == len(frame)
