@@ -312,36 +312,6 @@ def test_every_configuration_gets_its_own_shard_name() -> None:
     assert len(set(names)) == len(configs)
 
 
-def test_a_shard_name_depends_on_the_configuration_not_its_index() -> None:
-    """Keyed by config so a rerun overwrites its own shard and retries are idempotent.
-
-    Naming shards `task-<id>.csv` would tie them to grid ordering, and a reordered
-    grid would silently make an old shard describe a different configuration.
-    """
-    config = lora_grid()[7]
-    same = run_arms.Config(
-        config.rung,
-        config.assay,
-        config.scheme,
-        config.readout,
-        config.n,
-        config.seed,
-        config.checkpoint,
-    )
-
-    assert run_arms.shard_name(same) == run_arms.shard_name(config)
-
-
-def test_two_tasks_never_share_a_destination(tmp_path: Path) -> None:
-    """The race, stated directly: distinct configurations, distinct paths."""
-    first, second = lora_grid()[0], lora_grid()[1]
-    directory = run_arms.shard_dir(tmp_path, "lora")
-
-    assert directory / run_arms.shard_name(first) != directory / run_arms.shard_name(
-        second
-    )
-
-
 def test_aggregate_reconstructs_every_configuration(tmp_path: Path) -> None:
     configs = lora_grid()
     directory = run_arms.shard_dir(tmp_path, "lora")
@@ -409,20 +379,6 @@ def test_aggregate_without_a_shard_directory_fails_loudly(tmp_path: Path) -> Non
         run_arms.aggregate_shards(tmp_path, "lora", lora_grid())
 
 
-def test_grid_size_matches_the_grid_it_indexes() -> None:
-    """The --array bound and the --task-id mapping must come from one source.
-
-    A bound retyped into the sbatch and left behind when an axis changes finishes
-    cleanly having skipped configurations, which is a silent shortfall rather
-    than a failure. --aggregate is the backstop; this is the prevention.
-    """
-    assays = ("ASSAY_A", "ASSAY_B")
-    for rung in run_arms.RUNGS:
-        assert run_arms.grid_size(rung, assays) == len(
-            list(run_arms.grid(rung, assays))
-        )
-
-
 def test_the_documented_lora_array_bound_is_the_real_one() -> None:
     """slurm/submit-finetune.sh hardcodes --array=0-323; this is what pins it.
 
@@ -444,3 +400,235 @@ def test_the_documented_lora_array_bound_is_the_real_one() -> None:
         f"slurm/submit-finetune.sh does not declare --array=0-{size - 1}; the grid "
         "and the batch script disagree about how many tasks there are"
     )
+
+
+# --- main(), the wiring the pure helpers hang off ------------------------------
+#
+# The helpers above were fully covered while every new line in main() was not,
+# including the shard-writing branch that is the entire point of issue #20.
+# Reverting it to the old read-modify-write would have failed no test. That is
+# the same gap as the manifest one in #14: the library half tested, the script
+# half assumed. These execute main() end to end with the expensive parts stubbed.
+
+
+def run_main(monkeypatch, tmp_path: Path, argv: list[str], assays=("ASSAY_A",)):
+    """Drive main() with load_inputs and evaluate stubbed, so no model is loaded.
+
+    Everything between argument parsing and writing results is real: grid
+    construction, task-id mapping, the shard-versus-CSV branch and the file
+    layout. Only the two functions that need data and a GPU are replaced.
+    """
+    monkeypatch.setattr(
+        run_arms, "load_inputs", lambda _root: (pd.DataFrame(), {"assays": assays})
+    )
+    monkeypatch.setattr(
+        run_arms,
+        "evaluate",
+        lambda config, table, metadata, cache_dir: {
+            "rung": config.rung,
+            "assay": config.assay,
+            "scheme": config.scheme,
+            "readout": config.readout,
+            "n": config.n,
+            "seed": config.seed,
+            "checkpoint": config.checkpoint,
+            "spearman": 0.5,
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_arms.py",
+            *argv,
+            "--data-root",
+            str(tmp_path / "data"),
+            "--results-dir",
+            str(tmp_path / "results"),
+            "--log-dir",
+            str(tmp_path / "logs"),
+        ],
+    )
+    return run_arms.main()
+
+
+def test_a_task_writes_its_shard_and_never_the_combined_csv(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The fix issue #20 asked for, executed rather than inferred from filenames.
+
+    If this branch were reverted to read-modify-writing lora.csv, this fails:
+    the shard would be absent and lora.csv present.
+    """
+    assert run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", "0"]) == 0
+
+    results = tmp_path / "results"
+    expected = run_arms.shard_name(run_arms.config_for_task("lora", ("ASSAY_A",), 0))
+
+    assert (run_arms.shard_dir(results, "lora") / expected).is_file()
+    assert not (results / "lora.csv").exists(), (
+        "a task wrote the combined CSV; that is the read-modify-write path whose "
+        "concurrent use silently drops rows"
+    )
+
+
+def test_two_tasks_leave_two_shards_and_no_shared_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The race, exercised: the second task must not be able to clobber the first."""
+    for task_id in ("0", "1"):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", task_id])
+
+    results = tmp_path / "results"
+    shards = sorted(p.name for p in run_arms.shard_dir(results, "lora").glob("*.csv"))
+
+    assert len(shards) == 2, f"expected one shard per task, got {shards}"
+    assert not (results / "lora.csv").exists()
+
+
+def test_rerunning_a_task_overwrites_its_own_shard(monkeypatch, tmp_path: Path) -> None:
+    """A requeued array task must be idempotent, not append a second row."""
+    run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", "0"])
+    run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", "0"])
+
+    shards = list(run_arms.shard_dir(tmp_path / "results", "lora").glob("*.csv"))
+
+    assert len(shards) == 1
+    assert len(pd.read_csv(shards[0])) == 1
+
+
+def test_all_writes_the_combined_csv_rather_than_shards(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """One process owns the file, so --all keeps writing it directly."""
+    assert run_main(monkeypatch, tmp_path, ["--rung", "lora", "--all"]) == 0
+
+    results = tmp_path / "results"
+    frame = pd.read_csv(results / "lora.csv")
+
+    assert len(frame) == run_arms.grid_size("lora", ("ASSAY_A",))
+    assert not run_arms.shard_dir(results, "lora").exists()
+
+
+def test_aggregate_writes_the_combined_csv_from_shards(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The whole array round trip: every task, then one aggregation."""
+    size = run_arms.grid_size("lora", ("ASSAY_A",))
+    for task_id in range(size):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", str(task_id)])
+
+    assert run_main(monkeypatch, tmp_path, ["--rung", "lora", "--aggregate"]) == 0
+
+    frame = pd.read_csv(tmp_path / "results" / "lora.csv")
+    assert len(frame) == size
+
+
+def test_aggregate_refuses_a_short_run_rather_than_writing_it(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A preempted task must block aggregation, not silently shrink the results."""
+    run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", "0"])
+
+    with pytest.raises(AssertionError, match="produced no shard"):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora", "--aggregate"])
+
+    assert not (tmp_path / "results" / "lora.csv").exists()
+
+
+def test_aggregated_rows_come_back_in_grid_order(monkeypatch, tmp_path: Path) -> None:
+    """So lora.csv is row-comparable to the CSVs --all writes for the other rungs.
+
+    Sorting shard filenames instead would order them as strings, putting n2048
+    before n32 before n512.
+    """
+    size = run_arms.grid_size("lora", ("ASSAY_A",))
+    for task_id in range(size):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", str(task_id)])
+    run_main(monkeypatch, tmp_path, ["--rung", "lora", "--aggregate"])
+
+    frame = pd.read_csv(tmp_path / "results" / "lora.csv")
+    expected = list(run_arms.grid("lora", ("ASSAY_A",)))
+
+    assert list(zip(frame["readout"], frame["n"], frame["seed"])) == [
+        (config.readout, config.n, config.seed) for config in expected
+    ]
+
+
+def test_grid_size_is_what_the_task_ids_actually_span(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The bound and the mapping must agree, checked by using both rather than
+    by restating one in terms of the other.
+
+    Every id below grid_size resolves, and the next one does not.
+    """
+    assays = ("ASSAY_A",)
+    size = run_arms.grid_size("lora", assays)
+
+    resolved = {run_arms.config_for_task("lora", assays, i) for i in range(size)}
+
+    assert len(resolved) == size
+    with pytest.raises(AssertionError, match="outside the .* grid"):
+        run_arms.config_for_task("lora", assays, size)
+
+
+def test_each_task_writes_its_own_manifest(monkeypatch, tmp_path: Path) -> None:
+    """Concurrent tasks must not share a manifest filename.
+
+    run_context derives the manifest and log paths from the run name plus a
+    one-second timestamp. Under `--array=...%16`, sixteen tasks start in the same
+    second, so a shared name means write_text overwrites all but one manifest and
+    the log handler interleaves their lines. Three tasks in one second used to
+    leave two manifests. This is the CSV failure one layer down, and it defeats
+    the requirement that a task's manifest record what it ran.
+    """
+    for task_id in ("0", "1", "2"):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora", "--task-id", task_id])
+
+    manifests = sorted((tmp_path / "logs").glob("*.json"))
+    recorded = [
+        json.loads(path.read_text())["records"]["task_id"] for path in manifests
+    ]
+
+    assert sorted(recorded) == [0, 1, 2], (
+        f"three tasks left {len(manifests)} manifests recording {recorded}; "
+        "one overwrote another"
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--all", "--task-id", "3"],
+        ["--aggregate", "--task-id", "3"],
+        ["--all", "--aggregate"],
+    ],
+)
+def test_modes_that_contradict_each_other_are_rejected(
+    monkeypatch, tmp_path: Path, argv: list[str]
+) -> None:
+    """Whichever flag lost would be silently ignored, and exit 0 having done the
+    wrong thing: --all --task-id ran one configuration, --aggregate --task-id
+    trained nothing."""
+    with pytest.raises(AssertionError, match="were given together"):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora", *argv])
+
+
+def test_aggregate_rejects_a_shard_whose_contents_contradict_its_name(
+    tmp_path: Path,
+) -> None:
+    """A task that wrote the wrong row is otherwise indistinguishable from one
+    that wrote the right one, and the aggregate would attribute a number to an
+    arm that never produced it."""
+    configs = lora_grid()
+    directory = run_arms.shard_dir(tmp_path, "lora")
+    for config in configs:
+        write_shard(directory, config)
+    path = directory / run_arms.shard_name(configs[0])
+    frame = pd.read_csv(path)
+    frame.loc[0, "seed"] = 99
+    frame.to_csv(path, index=False)
+
+    with pytest.raises(AssertionError, match="describe different runs"):
+        run_arms.aggregate_shards(tmp_path, "lora", configs)

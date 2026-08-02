@@ -600,13 +600,28 @@ def aggregate_shards(
         f"{unexpected[:10]}"
     )
 
+    # Iterating `expected` rather than sorting filenames: sorting sorts strings,
+    # which puts n2048 before n32 before n512 and would leave the aggregated CSV
+    # in an order no other rung's CSV shares. `--all` writes in grid order, so
+    # this is what keeps lora.csv row-comparable to frozen.csv and zero_shot.csv.
     frames = []
-    for name in sorted(wanted):
+    for config in expected:
+        name = shard_name(config)
         frame = pd.read_csv(directory / name)
         assert len(frame) == 1, (
             f"shard {name} holds {len(frame)} rows; one configuration is one row, "
             "so this file was written by something other than a single task"
         )
+        # The filename says which configuration this is; the row has to agree.
+        # A task that wrote the wrong row would otherwise be indistinguishable
+        # from one that wrote the right one, and the aggregate would attribute a
+        # number to an arm that never produced it.
+        row = frame.iloc[0]
+        for field, value in asdict(config).items():
+            assert row[field] == value, (
+                f"shard {name} claims {field}={value} in its name but holds "
+                f"{row[field]!r}; the file and its contents describe different runs"
+            )
         frames.append(frame)
 
     return pd.concat(frames, ignore_index=True)
@@ -679,7 +694,27 @@ def main() -> int:
         print(grid_size(args.rung, tuple(sorted(metadata["assays"]))))
         return 0
 
-    with run_context("dms-run-arms", log_dir=args.log_dir, params=vars(args)) as run:
+    modes = [name for name in ("all", "task_id", "aggregate") if getattr(args, name)]
+    assert len(modes) <= 1, (
+        f"--{' and --'.join(modes)} were given together, and they select "
+        "different things to do. Whichever lost would be silently ignored: "
+        "--all --task-id would run one configuration and exit 0, and "
+        "--aggregate --task-id would train nothing."
+    )
+
+    # Each array task needs its own manifest and log. run_context builds both
+    # filenames from the run name and a timestamp with one-second resolution, so
+    # 16 tasks starting in the same second under `%16` would share a name: the
+    # manifest is written with write_text and would be overwritten, and the log
+    # handler appends, so their lines would interleave into one file. That is the
+    # same silent shortfall this script now avoids for the CSVs, one layer down,
+    # and it would defeat issue #20's own requirement that a task's manifest
+    # record what it ran.
+    run_name = "dms-run-arms"
+    if args.task_id is not None:
+        run_name = f"{run_name}-task{args.task_id}"
+
+    with run_context(run_name, log_dir=args.log_dir, params=vars(args)) as run:
         with run.step("load prepared inputs"):
             table, metadata = load_inputs(args.data_root)
             assays = tuple(sorted(metadata["assays"]))
@@ -761,7 +796,7 @@ def main() -> int:
                 # `--aggregate` combines the shards once every task has finished.
                 directory = shard_dir(args.results_dir, args.rung)
                 directory.mkdir(parents=True, exist_ok=True)
-                for config, row in zip(configs, rows):
+                for config, row in zip(configs, rows, strict=True):
                     destination = directory / shard_name(config)
                     pd.DataFrame([row]).to_csv(destination, index=False)
                     log.info(f"wrote {destination}")

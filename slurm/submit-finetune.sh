@@ -65,5 +65,5 @@ python projects/dms-benchmark/scripts/run_arms.py \
     --results-dir "${RESULTS_DIR}"
 
 # To debug one configuration without the scheduler, run a task by hand:
-#   SLURM_ARRAY_TASK_ID=0 bash slurm/finetune.sbatch
+#   SLURM_ARRAY_TASK_ID=0 bash slurm/submit-finetune.sh
 # The #SBATCH lines are comments to bash, so this takes exactly the same path.
