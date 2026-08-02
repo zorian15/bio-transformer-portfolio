@@ -18,36 +18,95 @@ Edit the `#SBATCH` directives (partition, account, time, resources) for your clu
 
 `submit-finetune.sh` is a job array over the whole rung-3 grid: one task is one configuration, 324 of them. The mapping from `$SLURM_ARRAY_TASK_ID` to a configuration lives in `run_arms.py` and is covered by tests, so nothing here does arithmetic on the index.
 
-### Bring-up, before the first submission
+### Building the environment
 
-None of this has been exercised on the cluster yet. Do it once, in order, and stop at the first thing that surprises you.
+Try conda first, since that is what the repo documents:
 
 ```bash
-# 1. Build the env from the same file the laptop uses.
-mamba env create -f environment.yml
-conda activate biollm   # conda.sh provides this; mamba activate needs mamba.sh
-pip install -e .          # safe here; a cluster checkout is not a worktree
+mamba env create -f environment.yml && conda activate biollm && pip install -e .
+```
 
-# 2. Confirm you got a CUDA build, not the CPU one. conda-forge resolves this
-#    per platform, and a CPU build would run the whole array 50x slow rather
-#    than failing, which is the expensive way to find out.
+**On the rhino nodes this fails, and the reason is worth recording** so the next person does not spend an afternoon on it. `conda.anaconda.org` resolves to AAAA records only, and IPv6 egress from those nodes does not work, so every repodata fetch dies mid-TLS with `SSL_ERROR_SYSCALL` / connection reset. It is not a proxy, a firewall rule against conda, or anything in `environment.yml`: `curl -4` to the same host succeeds, and IPv4 hosts such as github.com work normally, which is why `git clone` works on a node where `mamba` cannot. Diagnose with:
+
+```bash
+getent hosts conda.anaconda.org                                   # AAAA only?
+curl -4 -sS -o /dev/null -w 'v4: %{http_code}\n' https://conda.anaconda.org/conda-forge/noarch/repodata.json
+curl    -sS -o /dev/null -w 'default: %{http_code}\n' https://conda.anaconda.org/conda-forge/noarch/repodata.json
+```
+
+The knobs that force IPv4 preference are all root-owned, so this is not fixable from a user account. PyPI does answer, so the working path is a venv.
+
+### The venv fallback
+
+Only for a machine where conda cannot reach its channels. `tests/test_environment.py` forbids pip-installed torch, but it is `skipif(sys.platform != "darwin")`: the OpenMP hazard it guards is a macOS `libomp.dylib` collision, and PyPI's linux wheels ship CUDA. On Linux this is a legitimate build, not a workaround around a safety rule.
+
+```bash
+# 1. Python 3.11, matching environment.yml. uv fetches a standalone CPython from
+#    GitHub, which works where conda's channels do not. On 3.12 the resolver
+#    finds no pyarrow wheel, falls back to its sdist, and tries to build libcst,
+#    which needs a Rust compiler. That error names Rust, not the interpreter.
+pip install uv && uv python install 3.11
+
+# 2. Put it on the fast filesystem, not in $HOME. The bundled CUDA wheels
+#    (cublas, cudnn, nccl, cusparselt, triton) come to 4-6 GB, which is a large
+#    fraction of a typical home quota, and compute nodes read /fh/fast faster.
+uv venv --python 3.11 /fh/fast/<lab>/<user>/biollm-venv
+source /fh/fast/<lab>/<user>/biollm-venv/bin/activate
+
+# 3. --only-binary=:all: so pip reports "no wheel for X" rather than attempting a
+#    compile and burying the real problem in someone else's build log. Versions
+#    pinned to the laptop's, so the two environments differ in as little as
+#    possible; torch is left free because the laptop's build is conda-forge's.
+pip install --upgrade pip
+pip install --only-binary=:all: \
+  torch \
+  "numpy==2.4.6" "pandas==3.0.3" "scipy==1.17.1" "scikit-learn==1.8.0" \
+  "pyarrow==25.0.0" "matplotlib==3.10.9" \
+  "peft==0.20.0" "fair-esm==2.0.0" \
+  "pytest==9.1.1" "pyyaml==6.0.3"
+pip install -e .
+```
+
+That list is what rung 3 imports, not a copy of `environment.yml`. `transformers` and `sentence-transformers` are omitted: only Project 1's text arms use them, through a function-local import, and `runlog` records them as absent rather than failing.
+
+Point the batch scripts at it, rather than editing them:
+
+```bash
+export BIOTP_ENV_ACTIVATE=/fh/fast/<lab>/<user>/biollm-venv/bin/activate
+```
+
+Unset, they use `conda activate biollm`. Set, they source that file and exit non-zero if it does not exist, so a wrong path fails once at submit-test time instead of 324 times in parallel.
+
+If `uv venv` reports `Directory not empty` deleting an existing venv, the old one is still activated in your shell and NFS has silly-renamed its open files to `.nfsXXXX`. `deactivate`, then `rm -rf`.
+
+### The rest of bring-up
+
+```bash
+# 1. Confirm a CUDA build, not the CPU one. A CPU build does not error, it just
+#    runs the whole array ~50x slow, which is the expensive way to find out.
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 python -c "from biotp.utils import get_device; print(get_device(prefer_gpu=True))"   # expect: cuda
 
-# 3. Confirm peft attaches on CUDA. The offline suite only proves this against a
-#    toy module on CPU.
+# 2. Confirm peft attaches on CUDA. The offline suite only proves it on CPU
+#    against a toy module.
 pytest -q tests/test_train_lora.py
 
-# 4. Stage the data. It lives only on the laptop; --data-root points at it.
-rsync -avP ./data/processed/ user@cluster:/path/to/bio-transformer-portfolio/data/processed/
+# 3. Stage the data. Rung 3 needs exactly two files, about 600 KB: it calls
+#    load_esm2 directly and never touches the embedding cache, so the
+#    dms_embeddings/ (63 MB) and embeddings/ (169 MB) trees are for rungs 1-2
+#    and are dead weight here.
+rsync -avP data/processed/proteingym_variants.parquet \
+           data/processed/proteingym_assays.json \
+           user@cluster:/path/to/bio-transformer-portfolio/data/processed/
 
-# 5. Pre-warm the checkpoint cache, or 324 tasks each try to download ESM-2 on
+# 4. Pre-warm the checkpoint cache, or 324 tasks each try to download ESM-2 on
 #    first use. Put it somewhere the compute nodes can read.
 export TORCH_HOME="$HOME/.cache/torch"
 python -c "from biotp.embeddings import load_esm2; load_esm2('esm2_t12_35M_UR50D')"
 
-# 6. Run one task by hand before submitting 324. The #SBATCH lines are comments
-#    to bash, so this takes exactly the path the scheduler would.
+# 5. Run one task by hand before submitting 324. The #SBATCH lines are comments
+#    to bash, so this takes exactly the path the scheduler would, including the
+#    environment activation.
 SLURM_ARRAY_TASK_ID=0 bash slurm/submit-finetune.sh
 ```
 
@@ -67,7 +126,8 @@ ARRAY_JOB=$(sbatch --parsable slurm/submit-finetune.sh)
 # out. A wrap that just called python would fail on import, or worse, aggregate
 # into the default results directory rather than the one the array wrote to.
 sbatch --dependency=afterok:"$ARRAY_JOB" --wrap \
-  "source \"\$(conda info --base)/etc/profile.d/conda.sh\" && conda activate biollm && \
+  "source \"${BIOTP_ENV_ACTIVATE:-/dev/null}\" 2>/dev/null || \
+   { source \"\$(conda info --base)/etc/profile.d/conda.sh\" && conda activate biollm; } && \
    python projects/dms-benchmark/scripts/run_arms.py --rung lora --aggregate \
      --data-root \"${DATA_ROOT:-data}\" \
      --results-dir \"${RESULTS_DIR:-projects/dms-benchmark/results}\""

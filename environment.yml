@@ -22,8 +22,9 @@ dependencies:
   # Remaining ML / transformers stack via pip, to track the latest wheels.
   - pip:
       - transformers
-      - datasets
-      - accelerate
+      # datasets and accelerate were dropped: nothing in the repo imports
+      # either, and datasets is what pinned pyarrow>=21, whose sdist needs a
+      # Rust toolchain to build when no wheel matches the interpreter.
       - peft            # LoRA / parameter-efficient fine-tuning
       - sentence-transformers
       - fair-esm        # ESM-2 protein language models

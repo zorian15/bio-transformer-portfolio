@@ -37,11 +37,24 @@ set -euo pipefail
 # Same env as local. biotp.utils.get_device() picks cuda here, mps on the laptop.
 # PYTORCH_ENABLE_MPS_FALLBACK is deliberately absent: it is a laptop-only setting
 # and exporting it on a CUDA node would be cargo cult.
-# `conda activate`, not `mamba activate`: the mamba shell function comes from
-# mamba.sh, which this has not sourced, while conda.sh always provides conda
-# activate. The env is the same one either way.
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate biollm
+# Activate the environment. BIOTP_ENV_ACTIVATE points at an activation script for
+# sites where conda is not the working answer: this cluster's conda channels
+# resolve to IPv6-only and are unreachable, so the env there is a venv built from
+# PyPI (see slurm/README.md). Unset, this uses the conda env the repo documents.
+#
+# Checked rather than assumed: a wrong path would otherwise fail identically in
+# every one of the array's tasks, with the real cause buried in 324 log files.
+if [ -n "${BIOTP_ENV_ACTIVATE:-}" ]; then
+    test -f "${BIOTP_ENV_ACTIVATE}" || {
+        echo "BIOTP_ENV_ACTIVATE=${BIOTP_ENV_ACTIVATE} is not a file" >&2
+        exit 1
+    }
+    # shellcheck source=/dev/null
+    source "${BIOTP_ENV_ACTIVATE}"
+else
+    source "$(conda info --base)/etc/profile.d/conda.sh"
+    conda activate biollm
+fi
 
 # Point the checkpoint caches at storage the compute nodes share, so 324 tasks do
 # not each try to download ESM-2 on first use. Pre-warm once before submitting;

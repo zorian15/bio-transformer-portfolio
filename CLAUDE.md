@@ -11,6 +11,7 @@ Three small, openly-released transformer-and-biology experiments (see `PLANNING.
 - PyTorch comes from **conda-forge** via `environment.yml`; never `pip install torch`. The pip wheel bundles a second OpenMP runtime, and importing torch then aborts the process with `OMP: Error #15` instead of raising. `tests/test_environment.py` guards this.
 - Device: `biotp.utils.get_device()` returns cuda, then mps, then cpu. Locally set `PYTORCH_ENABLE_MPS_FALLBACK=1`.
 - SLURM: submit `slurm/submit-*.sh` for GPU-heavy one-offs while cluster access lasts; use the same `biollm` env on the cluster. Default partition `campus-new`; `chorus` for L40S.
+- **Exception, cluster only:** where conda cannot reach its channels, the batch scripts take `BIOTP_ENV_ACTIVATE` pointing at a venv's `activate`. `tests/test_environment.py` bans pip-installed torch, but it is `skipif(sys.platform != "darwin")` because the OpenMP hazard is a macOS `libomp.dylib` collision, so a Linux venv from PyPI wheels is legitimate rather than a rule dodged. `slurm/README.md` has the recipe and the diagnosis.
 
 ## Artifacts and storage
 - git tracks only small files: code, configs, metrics, small figures, DECISION_LOGs. Large binaries are gitignored.
