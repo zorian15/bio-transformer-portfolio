@@ -15,6 +15,38 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-08-02: rung 3 ran, and the delta it appeared to show is rung 2's under-fit
+
+- **Question / hypothesis:** what does adapting the encoder buy over a frozen representation, across three assays, three splits, three readouts and four training sizes? This is the headline the ladder was built to produce.
+- **Setup:** the full 324-configuration rung-3 grid on SLURM L40S, `esm2_t12_35M_UR50D`, LoRA rank 8 alpha 16 on `q_proj`/`v_proj`, lr 1e-4, batch 8. All 324 shards produced, no NaN, adapters attached in every run (184,320 trainable parameters), early stopping fired everywhere (11 to 110 epochs against a 200 cap).
+- **Result:** the naive comparison says fine-tuning helps. Against rung 2 as published, LoRA gains **+0.0399 Spearman on average** (Wilcoxon p=8.6e-5, 69% of configurations), and the gain looked concentrated in the position-sharing split: `random` +0.070, `contiguous` +0.029, `modulo` +0.021.
+
+  **That reading does not survive scrutiny, for two separate reasons.**
+
+  **The two rungs do not differ in exactly one thing.** Rung 2 trains at batch 256, lr 1e-3; rung 3 at batch 8, lr 1e-4. Early stopping is shared, but patience is counted in *epochs*, and an epoch is a different number of gradient updates on each rung: 5x more for rung 3 at N=32, rising to 25x at N=2048. 14.8% of rung-2 runs select `best_epoch <= 2`, essentially at initialisation. So the delta mixes "adapting the encoder helped" with "rung 3 optimised for longer", and the claim in `method.md` that consecutive rungs differ in exactly one respect is, as things stand, false. The two rungs share the stopping *constant*, not the stopping *rule*.
+
+  **A converged baseline on the same frozen features recovers the whole gain.** `frozen_reference.py` fits ridge regression on the identical cached embeddings, the identical splits and subsample draws, with the penalty chosen on the identical validation fold. It is converged by construction. Results in `results/frozen_ridge.csv`:
+
+  | contrast | mean | Wilcoxon p | wins |
+  |---|---:|---:|---:|
+  | LoRA − rung 2 as published | +0.0399 | 8.6e-5 | 69% |
+  | ridge − rung 2 as published | +0.0383 | 0.017 | 57% |
+  | **LoRA − ridge** | **+0.0015** | **0.28** | 59% |
+
+  Mean Spearman: rung 2 0.224, ridge 0.262, LoRA 0.263. **Against a properly-fit frozen representation, LoRA buys nothing on average.** The apparent gain is the size of rung 2's under-fit.
+
+  **What does survive.** The scheme ordering: LoRA beats ridge only on `fold_random_5` (+0.0195, p=0.032), and not on either position-disjoint scheme (`contiguous` +0.007 p=0.96, `modulo` −0.022 p=0.86). The paired scheme contrast `random − modulo` is +0.049, p=0.0022. That is consistent with adaptation buying site-specific memorisation: predicting each test variant by the mean score of its position in the training pool reaches Spearman 0.80 / 0.43 / 0.80 under `random` and is undefined under the disjoint schemes, which have 0% position overlap by construction.
+
+  **Three corrections to what I first wrote, all found by the skeptic pass.**
+
+  1. I read "contiguous p=0.017 vs modulo p=0.57" as the two disjoint schemes disagreeing. That is the difference-of-significance fallacy. Paired, `contiguous − modulo` is +0.008, p=0.52: there is nothing to explain.
+  2. I claimed the gain was largest for the `mean` readout (+0.080) and near zero for `difference_at_position` (+0.007). Against ridge the ordering **reverses**: `difference_at_position` +0.036 (p<0.001), `at_position` +0.019, `mean` −0.051. The `mean` readout is where rung 2's baseline is broken, not where LoRA helps.
+  3. The 108 seed-averaged configurations are not 108 independent observations: they rest on 3 assays and 3 test folds per scheme, and the per-assay deltas change sign. Under an assay-clustered bootstrap only `random` excludes zero (`contiguous` [−0.011, +0.073], `modulo` [−0.013, +0.078], `random` [+0.029, +0.115]). Effective n for any scheme-level claim is nearer 3 than 36.
+
+  Two smaller corrections: R1AB_SARS2's anti-correlated prior is specific to the 35M checkpoint (650M gives +0.11 / +0.06 / +0.21), and should not be described as a property of the assay. CCR5's prior beating both supervised rungs almost everywhere does hold: 0/12 rung-2, 1/12 rung-3 and 1/12 ridge scheme-by-N cells clear it.
+
+- **Decision / next step:** **do not report the +0.040 as an effect of adaptation.** The publishable finding is the negative one: on this cohort, at 35M, LoRA does not beat a converged frozen-feature baseline, and whatever advantage it has is confined to the split that lets it see the test positions. Before the ladder can attribute anything to adaptation, rung 2 must be re-run with rung 3's optimiser, or patience redefined in gradient steps rather than epochs. `frozen_ridge.csv` stays as a permanent sanity floor for rung 2, because it is nearly free once the embeddings are cached and it is the check that catches this class of failure. Filed as its own issue rather than patched here, since re-running rung 2 changes committed numbers.
+
 ### 2026-08-02: rung 3 becomes a 324-task SLURM array (issue #20)
 
 - **Question / hypothesis:** turn rung 3 into a job array without inheriting the two problems the #14 validation surfaced: a repo that disagreed with itself about what a job is, and a result-writing path that would silently lose rows under concurrency.
