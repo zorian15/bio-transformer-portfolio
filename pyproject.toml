@@ -49,3 +49,22 @@ line-length = 88
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
+
+[tool.coverage.run]
+# Branch coverage, not just line coverage. A guard clause whose body never runs
+# is fully line-covered while half its behavior is untested, and the readout and
+# split checks in this codebase are mostly branches. Set here rather than left to
+# the caller so a local `pytest --cov=biotp` measures the same thing the PR gate
+# does, and the two cannot report different numbers for the same commit.
+branch = true
+
+[tool.coverage.report]
+# The floor, read both by a local `pytest --cov=biotp` and by the coverage review
+# agent on a PR. The two apply it to different denominators: locally it gates the
+# whole package, and on a PR it gates only the lines that PR touched. Patch
+# coverage is the stricter reading, since a small diff has nowhere to hide behind
+# an already well-tested codebase.
+fail_under = 80
+# Name the uncovered lines, so a number under the floor is actionable rather than
+# sending the reader back to run the tool again with different flags.
+show_missing = true
