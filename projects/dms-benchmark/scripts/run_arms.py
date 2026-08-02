@@ -694,13 +694,35 @@ def main() -> int:
         print(grid_size(args.rung, tuple(sorted(metadata["assays"]))))
         return 0
 
-    modes = [name for name in ("all", "task_id", "aggregate") if getattr(args, name)]
+    # `args.task_id is not None`, not `args.task_id`: task 0 is falsy, and it is
+    # the id slurm/README.md tells you to run by hand when debugging. Under a
+    # truthiness test this guard passed over exactly the case most likely to be
+    # typed, and `--all --task-id 0` overwrote the combined CSV with one row.
+    selected = {
+        "--all": args.all,
+        "--task-id": args.task_id is not None,
+        "--aggregate": args.aggregate,
+    }
+    modes = [flag for flag, given in selected.items() if given]
     assert len(modes) <= 1, (
-        f"--{' and --'.join(modes)} were given together, and they select "
-        "different things to do. Whichever lost would be silently ignored: "
-        "--all --task-id would run one configuration and exit 0, and "
-        "--aggregate --task-id would train nothing."
+        f"{' and '.join(modes)} were given together, and they select different "
+        "things to do. Whichever lost would be silently ignored: --all with "
+        "--task-id runs one configuration and exits 0, and --aggregate with "
+        "--task-id trains nothing."
     )
+
+    if args.task_id is not None:
+        # The task id names the configuration by itself, so an axis given
+        # alongside it would be quietly discarded rather than honoured.
+        ignored = [
+            f"--{name}"
+            for name in ("assay", "scheme", "readout", "n", "seed")
+            if getattr(args, name) is not None
+        ]
+        assert not ignored, (
+            f"--task-id selects the whole configuration, so {', '.join(ignored)} "
+            "would be ignored. Give one or the other."
+        )
 
     # Each array task needs its own manifest and log. run_context builds both
     # filenames from the run name and a timestamp with one-second resolution, so
@@ -747,7 +769,14 @@ def main() -> int:
                     "onto exactly one configuration"
                 )
             if args.rung != "zero_shot":
-                assert args.readout and args.n, "--readout and --n are required"
+                # `is not None` rather than truthiness, so `--n 0` fails on its
+                # own terms below instead of being reported as a missing flag.
+                assert (
+                    args.readout is not None and args.n is not None
+                ), "--readout and --n are required on a supervised rung"
+                assert (
+                    args.n > 0
+                ), f"--n must be positive on a supervised rung, got {args.n}"
             configs = [
                 Config(
                     args.rung,

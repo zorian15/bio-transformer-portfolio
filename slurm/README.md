@@ -61,8 +61,16 @@ ARRAY_JOB=$(sbatch --parsable slurm/submit-finetune.sh)
 
 # Combine the shards once every task has succeeded. afterok means a failed task
 # blocks aggregation rather than letting it report a short result.
+#
+# --wrap runs in a fresh shell that has not sourced conda and does not inherit
+# DATA_ROOT or RESULTS_DIR, so the activation and the paths have to be spelled
+# out. A wrap that just called python would fail on import, or worse, aggregate
+# into the default results directory rather than the one the array wrote to.
 sbatch --dependency=afterok:"$ARRAY_JOB" --wrap \
-  "python projects/dms-benchmark/scripts/run_arms.py --rung lora --aggregate"
+  "source \"\$(conda info --base)/etc/profile.d/conda.sh\" && mamba activate biollm && \
+   python projects/dms-benchmark/scripts/run_arms.py --rung lora --aggregate \
+     --data-root \"${DATA_ROOT:-data}\" \
+     --results-dir \"${RESULTS_DIR:-projects/dms-benchmark/results}\""
 ```
 
 Each task writes `results/lora_shards/<configuration>.csv` and nothing else; `--aggregate` combines them into `results/lora.csv`. Shards are named after the configuration rather than the task id, so requeueing a task overwrites its own shard instead of duplicating a row.

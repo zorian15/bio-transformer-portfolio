@@ -210,9 +210,16 @@ def test_the_other_rungs_record_no_adapter_configuration(rung: str) -> None:
 
 
 def test_every_rung_has_a_decision_recorded_for_it() -> None:
-    """A fourth rung must not silently inherit rung 1's empty block."""
-    for rung in run_arms.RUNGS:
-        run_arms.configuration_records(rung)
+    """A fourth rung must not silently inherit rung 1's empty block.
+
+    Asserting rather than merely calling: as first written this passed against a
+    `configuration_records` whose entire body was `return {}`, which is exactly
+    the regression its name claims to guard against.
+    """
+    records = {rung: run_arms.configuration_records(rung) for rung in run_arms.RUNGS}
+
+    assert set(records) == set(run_arms.RUNGS)
+    assert records["lora"], "rung 3 must record the adapter configuration it ran"
 
 
 def test_an_unknown_rung_is_rejected() -> None:
@@ -603,6 +610,10 @@ def test_each_task_writes_its_own_manifest(monkeypatch, tmp_path: Path) -> None:
         ["--all", "--task-id", "3"],
         ["--aggregate", "--task-id", "3"],
         ["--all", "--aggregate"],
+        # Task 0 specifically: it is falsy, so a truthiness test let it through,
+        # and it is the id the README tells you to run by hand when debugging.
+        ["--all", "--task-id", "0"],
+        ["--aggregate", "--task-id", "0"],
     ],
 )
 def test_modes_that_contradict_each_other_are_rejected(
@@ -632,3 +643,140 @@ def test_aggregate_rejects_a_shard_whose_contents_contradict_its_name(
 
     with pytest.raises(AssertionError, match="describe different runs"):
         run_arms.aggregate_shards(tmp_path, "lora", configs)
+
+
+def test_grid_size_prints_the_number_and_nothing_else(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """The sbatch reads this with command substitution to size --array.
+
+    run_context logs to stdout, so handling --grid-size inside it would put a
+    dozen log lines in front of the number and the batch script would set a
+    nonsense bound. This pins the contract that comment argues for, which was
+    previously only ever checked by hand.
+    """
+    assert run_main(monkeypatch, tmp_path, ["--rung", "lora", "--grid-size"]) == 0
+
+    captured = capsys.readouterr()
+
+    assert captured.out == f"{run_arms.grid_size('lora', ('ASSAY_A',))}\n"
+    assert not (tmp_path / "logs").exists(), "a query should not leave a manifest"
+
+
+def test_a_single_configuration_run_needs_the_axes_that_identify_it(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Without --all there is no default configuration to fall back on."""
+    with pytest.raises(AssertionError, match="is required without --all"):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora"])
+
+
+def test_a_supervised_rung_without_a_readout_or_n_is_rejected(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Otherwise the Config defaults fill in, and rung 3 trains on nothing.
+
+    `readout or "none"` and `n or 0` exist for zero-shot, which has neither. On a
+    supervised rung they would produce a run with no training data and an
+    unusable readout, which still writes a shard and still reports a number.
+    """
+    with pytest.raises(AssertionError, match="--readout and --n are required"):
+        run_main(
+            monkeypatch,
+            tmp_path,
+            [
+                "--rung",
+                "lora",
+                "--assay",
+                "ASSAY_A",
+                "--scheme",
+                "fold_modulo_5",
+                "--seed",
+                "0",
+            ],
+        )
+
+
+def test_explicit_axes_select_the_same_configuration_as_the_task_id(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The two ways of naming one configuration must not disagree."""
+    config = run_arms.config_for_task("lora", ("ASSAY_A",), 0)
+    run_main(
+        monkeypatch,
+        tmp_path,
+        [
+            "--rung",
+            "lora",
+            "--assay",
+            config.assay,
+            "--scheme",
+            config.scheme,
+            "--readout",
+            config.readout,
+            "--n",
+            str(config.n),
+            "--seed",
+            str(config.seed),
+        ],
+    )
+
+    shards = list(run_arms.shard_dir(tmp_path / "results", "lora").glob("*.csv"))
+
+    assert [path.name for path in shards] == [run_arms.shard_name(config)]
+
+
+def test_task_zero_does_not_slip_past_the_mode_guard(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Regression: `--all --task-id 0` used to overwrite the combined CSV.
+
+    `args.task_id` was tested for truthiness, and 0 is falsy, so the mode guard
+    passed over the one id most likely to be typed by hand. The run then took the
+    --all branch's write path with a single configuration's row, replacing a
+    complete lora.csv with a one-row file and exiting 0.
+    """
+    run_main(monkeypatch, tmp_path, ["--rung", "lora", "--all"])
+    complete = len(pd.read_csv(tmp_path / "results" / "lora.csv"))
+
+    with pytest.raises(AssertionError, match="were given together"):
+        run_main(monkeypatch, tmp_path, ["--rung", "lora", "--all", "--task-id", "0"])
+
+    assert len(pd.read_csv(tmp_path / "results" / "lora.csv")) == complete
+
+
+def test_task_id_alongside_an_explicit_axis_is_rejected(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The axis would be discarded, so the run would not be the one asked for."""
+    with pytest.raises(AssertionError, match="would be ignored"):
+        run_main(
+            monkeypatch,
+            tmp_path,
+            ["--rung", "lora", "--task-id", "0", "--seed", "2"],
+        )
+
+
+def test_a_supervised_rung_rejects_a_zero_training_size(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """`--n 0` is falsy, so it used to be reported as a missing flag."""
+    with pytest.raises(AssertionError, match="--n must be positive"):
+        run_main(
+            monkeypatch,
+            tmp_path,
+            [
+                "--rung",
+                "lora",
+                "--assay",
+                "ASSAY_A",
+                "--scheme",
+                "fold_modulo_5",
+                "--readout",
+                "mean",
+                "--n",
+                "0",
+                "--seed",
+                "0",
+            ],
+        )
