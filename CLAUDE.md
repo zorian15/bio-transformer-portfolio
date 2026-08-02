@@ -10,7 +10,7 @@ Three small, openly-released transformer-and-biology experiments (see `PLANNING.
 - Create/update from `environment.yml`: `mamba env create -f environment.yml` (or `mamba env update -f environment.yml`), then `mamba activate biollm`, then `pip install -e .`.
 - PyTorch comes from **conda-forge** via `environment.yml`; never `pip install torch`. The pip wheel bundles a second OpenMP runtime, and importing torch then aborts the process with `OMP: Error #15` instead of raising. `tests/test_environment.py` guards this.
 - Device: `biotp.utils.get_device()` returns cuda, then mps, then cpu. Locally set `PYTORCH_ENABLE_MPS_FALLBACK=1`.
-- SLURM: submit `slurm/*.sbatch` for GPU-heavy one-offs while cluster access lasts; use the same `biollm` env on the cluster. Default partition `campus-new`; `chorus` for L40S.
+- SLURM: submit `slurm/submit-*.sh` for GPU-heavy one-offs while cluster access lasts; use the same `biollm` env on the cluster. Default partition `campus-new`; `chorus` for L40S.
 
 ## Artifacts and storage
 - git tracks only small files: code, configs, metrics, small figures, DECISION_LOGs. Large binaries are gitignored.

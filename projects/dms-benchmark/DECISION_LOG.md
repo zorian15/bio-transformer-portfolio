@@ -15,6 +15,34 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-08-02: rung 3 becomes a 324-task SLURM array (issue #20)
+
+- **Question / hypothesis:** turn rung 3 into a job array without inheriting the two problems the #14 validation surfaced: a repo that disagreed with itself about what a job is, and a result-writing path that would silently lose rows under concurrency.
+- **Setup:** no experiment. `slurm/submit-finetune.sh` becomes a real array; `run_arms.py` gains `--task-id`, `--grid-size` and `--aggregate`.
+- **Result:**
+
+  **A job is one configuration, so the array is 324 tasks**, not the 81 the 2026-08-01 entry assumed. That entry costed a job as one `(assay, scheme, readout, seed)` running the full N curve, while the runner's own docstring described one configuration per invocation. Both readings were in the tree. 324 wins because the runner already works that way, a preempted task costs one configuration rather than four, and short tasks backfill better. Total GPU-hours are unchanged: still 143 MPS-hours, still 10 to 18 on an L40S. Restated per task, at 3N + 256 per-epoch encoder work: the N=2048 arms are 18x the N=32 ones and take about 70% of a curve between them, so the worst task is ~1.2 h on MPS and the cheapest ~4 minutes, which is 5 to 10 minutes and well under a minute respectively on an L40S. MaxArraySize here is 50001, so 324 needs no chunking.
+
+  **The array index maps to a configuration in Python, not in the batch script.** `--task-id` indexes `grid`, which was already deterministic. An off-by-one in a shell expression would be invisible until the results came up short, and nothing in a batch file is reachable by a test.
+
+  **One configuration now writes one file.** Each task writes `results/<rung>_shards/<configuration>.csv`, and `--aggregate` combines them. The old path read-modify-wrote a single CSV under `not args.all`, which is exactly the array path: two tasks finishing close together both read the pre-existing file and both wrote it, and the loser vanished. The result would have been a well-formed CSV with fewer rows than jobs that reported success, with nothing cross-checking the two. Shards are keyed by configuration rather than task id, so a requeued task overwrites its own shard instead of duplicating a row, and the name stays meaningful if the grid is ever reordered.
+
+  **Aggregation asserts rather than trusts.** It refuses to write unless every configuration produced a shard, and names the ones that did not; it also rejects shards belonging to no configuration in the current grid, since a leftover from an earlier grid would report an arm this run never asked for. Verified on real data: with 2 of 324 shards present it named 10 missing and said "and 312 more", and wrote no partial `frozen.csv`.
+
+  **Nothing moved.** A task's output is identical to the committed frozen-rung numbers for the same configuration, to the last digit, and `--rung frozen --all` still reproduces `frozen.csv` byte-for-byte.
+
+  **One defect found by using the thing rather than testing it.** `--grid-size` originally printed inside `run_context`, whose logger writes to stdout, so the command substitution the batch script uses to size `--array` would have captured a dozen log lines along with the number. It is now handled before the run context: a query that changes nothing should not open a run or leave a manifest.
+
+  **The same race survived one layer down, and review caught it.** Fixing the CSV write left `run_context` untouched, and it derives both the log and the manifest path from the run name plus a timestamp with one-second resolution. Every task used the name `dms-run-arms`, so under `%16` the sixteen tasks starting in a given second shared a filename: the manifest is written with `write_text` and would be overwritten, the log handler appends and would interleave. Reproduced directly: three runs in one second left two manifests, with the middle task's record gone. That would have defeated this issue's own requirement that a task's manifest record what it ran. Tasks now run under `dms-run-arms-task<id>`. Worth stating as a general hazard rather than a local fix: `run_context` is not safe for two concurrent runs sharing a name, and the next array to be written will need the same precaution.
+
+  **The cost of 324 over 81, quantified rather than asserted.** Per-task fixed overhead is about 20 s of imports plus `load_esm2`, so roughly 1.8 allocation-hours across the array against 10 to 18 GPU-hours of work. For the N=32 arms, startup plausibly exceeds compute. That is the price of the finer restart granularity, and it is worth knowing before the same choice is made for a larger grid.
+
+  **The walltime is conditional, not derived.** The 1 h per task assumes early stopping fires. `MAX_EPOCHS = 200` with patience 10 means an arm that never stops early runs about 10x the estimate at N=2048. The failure is loud, since the task dies without a shard and `--aggregate` names it, which is the right shape but not the same as the limit being right.
+
+  **Coverage review found the wiring untested, for the second time.** The pure helpers were fully covered while every new line in `main()` was not, including the shard-writing branch that is the entire point of this issue: reverting it to the old read-modify-write would have failed no test. That is the same asymmetry as the manifest gap in #14, library half tested and script half assumed. `main()` is now exercised end to end with `load_inputs` and `evaluate` stubbed, and three tests that restated their target's implementation were replaced rather than kept for the count.
+
+- **Decision / next step:** the submission machinery is done and the cluster is not. Nothing in issue #20's third item has been exercised: the env has never been solved there, conda-forge has never been checked for a CUDA build on that platform, `peft` has never run on CUDA in this project, the data has not been staged, and the checkpoint cache has not been pre-warmed. `slurm/README.md` carries that as an ordered checklist. The run that fills in `lora.csv`, and the rung-2-to-rung-3 delta it produces, is the next entry.
+
 ### 2026-08-01: refactor the training layer before the SLURM array (issue #14)
 
 - **Question / hypothesis:** three findings deferred from PR #13's reviews, none of them a correctness bug, all of them places where the discipline `embeddings.py` got right did not cross into `training.py`. The question is whether they can be cleaned up without moving a single number, since the SLURM array is the first place a diverged early-stopping rule would corrupt a real result rather than a toy one.

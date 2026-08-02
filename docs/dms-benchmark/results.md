@@ -186,8 +186,13 @@ where rung 2 was struggling.
 
 ### The cost estimate was wrong, and validation was why
 
-Issue #11 estimated roughly 7 GPU-hours for the 81-job array. That figure counted
-training passes and ignored validation entirely.
+Issue #11 estimated roughly 7 GPU-hours for the 81-job array, where a job ran
+the whole N curve for one `(assay, scheme, readout, seed)`. That figure counted
+training passes and ignored validation entirely. Issue #20 later settled the
+job granularity the other way: the SLURM array submits one task per
+configuration, 324 of them rather than 81, so that a preempted task costs one
+configuration instead of a whole curve. Total GPU-hours are unchanged either
+way; see the [experiment log](decision-log.md) for that decision.
 
 ProteinGym's folds are ~1,000 to 1,270 variants each, and the fine-tuned rung
 re-encodes the whole validation fold every epoch. At N=32 that is validating on

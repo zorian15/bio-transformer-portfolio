@@ -22,7 +22,7 @@ Numbering matches build order, so Project 1 is the one to build first. That orde
 | `projects/*/` | One folder per project: `README.md` (scope) + `DECISION_LOG.md` (experiment log) |
 | `data/` | Datasets (gitignored); see `data/README.md` for what to fetch |
 | `notebooks/` | Exploratory notebooks |
-| `slurm/` | sbatch templates for GPU-heavy one-offs; see `slurm/README.md` |
+| `slurm/` | `submit-*.sh` sbatch scripts for GPU-heavy one-offs; see `slurm/README.md` |
 
 ## Quickstart
 

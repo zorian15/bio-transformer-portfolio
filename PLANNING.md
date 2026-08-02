@@ -14,7 +14,7 @@ Two-path design: use SLURM GPUs freely while available, but keep every step runn
 Primary machine: M5 MacBook Air, 24 GB unified memory, Apple Silicon (PyTorch MPS backend, no CUDA). SLURM GPU nodes (CUDA) are available now, but assume access may become limited within a few months.
 
 - Device-agnostic code: `biotp.utils.get_device()` picks cuda, then mps, then cpu, so scripts run unchanged on a GPU node or the Mac. Set PYTORCH_ENABLE_MPS_FALLBACK=1 locally for ops that lack MPS kernels.
-- SLURM-ready from day one: `slurm/` holds sbatch templates for the GPU-heavy one-offs (embedding extraction, LoRA or full fine-tunes). Submit these while access lasts; the larger ESM-2 sizes are exactly what they are for.
+- SLURM-ready from day one: `slurm/` holds `submit-*.sh` sbatch scripts for the GPU-heavy one-offs (embedding extraction, LoRA or full fine-tunes). Submit these while access lasts; the larger ESM-2 sizes are exactly what they are for.
 - Decouple expensive from iterative. Extract ESM-2 embeddings once (on SLURM when available, else on the laptop for small checkpoints), cache to disk, and run all head training and evaluation on the cached vectors. The costly step runs anywhere and only once; fast iteration runs on the Mac indefinitely.
 - Front-load while access lasts. Run GPU-heavy jobs at every size that might be needed and cache their outputs (embeddings, checkpoints), so later work is not blocked if SLURM access ends. A rented cloud GPU or Colab is the fallback afterward.
 - ESM-2 sizing: iterate with esm2_t12_35M (dim 480) or esm2_t30_150M (dim 640) locally; treat 650M (dim 1280) as a "run on SLURM, cache the output" job; skip 3B and larger.

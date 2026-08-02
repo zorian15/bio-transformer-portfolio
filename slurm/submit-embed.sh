@@ -12,8 +12,11 @@
 set -euo pipefail
 
 # Same env as local. biotp.utils.get_device() picks cuda here, mps on the laptop.
+# `conda activate`, not `mamba activate`: the mamba shell function comes from
+# mamba.sh, which this has not sourced, while conda.sh always provides conda
+# activate. The env is the same one either way.
 source "$(conda info --base)/etc/profile.d/conda.sh"
-mamba activate biollm
+conda activate biollm
 
 # GPU-heavy one-off: extract and cache ESM-2 embeddings into data/processed/
 # so the vectors can be rsync'd to the laptop afterward (see slurm/README.md).
