@@ -999,6 +999,7 @@ def test_rung_two_trains_with_the_shared_optimiser(monkeypatch) -> None:
     """
     monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
     monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
+    monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
     seen = capture_optimiser(monkeypatch, "train")
     monkeypatch.setattr(
         run_arms, "assay_features", lambda *a, **k: np.zeros((9, 4), dtype=np.float32)
@@ -1014,6 +1015,11 @@ def test_rung_two_trains_with_the_shared_optimiser(monkeypatch) -> None:
 
     assert seen["lr"] == run_arms.SUPERVISED_LEARNING_RATE
     assert seen["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
+    # The third leg. Patience counts epochs and MAX_EPOCHS caps how many exist,
+    # so a rung-specific ceiling hands one rung a larger budget while both still
+    # read the same batch size and learning rate. That is issue #33 through a
+    # different door.
+    assert seen["max_epochs"] == run_arms.MAX_EPOCHS
 
 
 def test_rung_three_trains_with_the_same_optimiser(monkeypatch) -> None:
@@ -1025,6 +1031,7 @@ def test_rung_three_trains_with_the_same_optimiser(monkeypatch) -> None:
     """
     monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
     monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
+    monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
     seen = capture_optimiser(monkeypatch, "train_lora")
     monkeypatch.setattr(
         run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
@@ -1039,6 +1046,11 @@ def test_rung_three_trains_with_the_same_optimiser(monkeypatch) -> None:
 
     assert seen["lr"] == run_arms.SUPERVISED_LEARNING_RATE
     assert seen["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
+    # The third leg. Patience counts epochs and MAX_EPOCHS caps how many exist,
+    # so a rung-specific ceiling hands one rung a larger budget while both still
+    # read the same batch size and learning rate. That is issue #33 through a
+    # different door.
+    assert seen["max_epochs"] == run_arms.MAX_EPOCHS
 
 
 def test_no_rung_specific_optimiser_constants_survive() -> None:
@@ -1056,7 +1068,7 @@ def test_no_rung_specific_optimiser_constants_survive() -> None:
 
 
 @pytest.mark.parametrize("rung", ["frozen", "lora"])
-def test_the_manifest_records_the_supervised_optimiser(rung: str) -> None:
+def test_the_manifest_records_the_supervised_optimiser(monkeypatch, rung: str) -> None:
     """`train` records batch_size in its history, and nothing forwarded it.
 
     The field was justified as the only way a manifest reader recovers the
@@ -1065,8 +1077,17 @@ def test_the_manifest_records_the_supervised_optimiser(rung: str) -> None:
     reason to record it at all is that the two are comparable only while they
     agree.
     """
+    # Sentinels, because comparing a field to the constant it was built from is
+    # satisfied by any constant. Four in this module equal 8.
+    monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
+    monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
+    monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
+
     supervised = run_arms.configuration_records(rung)["supervised"]
 
+    assert supervised["batch_size"] == 7
+    assert supervised["learning_rate"] == 5e-5
+    assert supervised["max_epochs"] == 3
     assert supervised["batch_size"] == run_arms.SUPERVISED_BATCH_SIZE
     assert supervised["learning_rate"] == run_arms.SUPERVISED_LEARNING_RATE
     assert supervised["max_epochs"] == run_arms.MAX_EPOCHS
@@ -1129,3 +1150,41 @@ def test_scoring_batch_size_is_not_the_training_one(monkeypatch) -> None:
         "training read the scoring batch size; retuning a memory knob would "
         "then change the optimiser and reopen the confound issue #33 closed"
     )
+
+
+def test_both_supervised_rungs_receive_identical_optimiser_kwargs(monkeypatch) -> None:
+    """Equality of the whole kwargs dict, not a list of settings I remembered.
+
+    Every other guard here names a setting, so each new one is a fresh chance to
+    add it to one rung and not the other. `max_epochs` was exactly that: shared
+    batch size and learning rate, a rung-specific epoch ceiling, and issue #33
+    reopened with every test green. Comparing the dicts closes the class.
+    """
+    monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
+    monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
+    monkeypatch.setattr(run_arms, "MAX_EPOCHS", 3)
+    frame, splits, rows = tiny_assay_and_splits()
+    optimiser_keys = ("lr", "batch_size", "max_epochs")
+
+    frozen_seen = capture_optimiser(monkeypatch, "train")
+    monkeypatch.setattr(
+        run_arms, "assay_features", lambda *a, **k: np.zeros((9, 4), dtype=np.float32)
+    )
+    monkeypatch.setattr(run_arms, "predict", lambda *a, **k: np.arange(3, dtype=float))
+    run_arms.run_frozen(
+        frame, "ASSAY_A", splits, rows, "mean", "M" * 20, "ckpt", Path("/tmp")
+    )
+
+    lora_seen = capture_optimiser(monkeypatch, "train_lora")
+    monkeypatch.setattr(
+        run_arms, "load_esm2", lambda *a, **k: SimpleNamespace(embedding_dim=4)
+    )
+    monkeypatch.setattr(run_arms, "build_head", lambda *a, **k: None)
+    monkeypatch.setattr(
+        run_arms, "predict_lora", lambda *a, **k: np.arange(3, dtype=float)
+    )
+    run_arms.run_lora(frame, splits, rows, "mean", "M" * 20, "ckpt", 0)
+
+    assert {k: frozen_seen[k] for k in optimiser_keys} == {
+        k: lora_seen[k] for k in optimiser_keys
+    }, "the two supervised rungs were handed different optimiser settings"
