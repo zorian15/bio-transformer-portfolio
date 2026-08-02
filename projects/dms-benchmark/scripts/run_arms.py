@@ -227,12 +227,24 @@ def subsample(train_pool: np.ndarray, n: int, assay: str, scheme: str, seed: int
     return rng.choice(train_pool, size=n, replace=False)
 
 
-def variant_split(assay: pd.DataFrame, rows: np.ndarray, wildtype: str | None):
-    """Build the VariantSplit train_lora and predict_lora consume."""
+def variant_split(
+    assay: pd.DataFrame, rows: np.ndarray, readout: str, wildtype: str | None
+):
+    """Build the VariantSplit train_lora and predict_lora consume.
+
+    Both `positions` and `wildtype` are readout-dependent, and `_check_split`
+    treats either one arriving where it does not apply as an error rather than
+    something to ignore: the mean readout pools every residue and cannot honour
+    a position, so carrying one would mean the caller thinks it asked for
+    something the run will not do.
+
+    `wildtype` was threaded that way from the start and `positions` was not,
+    which failed every mean configuration of rung 3 at the guard.
+    """
     subset = assay.iloc[rows]
     return VariantSplit(
         sequences=subset["mutated_sequence"].tolist(),
-        positions=subset["position"].tolist(),
+        positions=None if readout == "mean" else subset["position"].tolist(),
         targets=subset["DMS_score"].to_numpy(dtype=np.float32),
         wildtype=wildtype,
     )
@@ -408,8 +420,8 @@ def run_lora(
     encoder, head, history = train_lora(
         encoder=encoder,
         head=head,
-        train_data=variant_split(assay, rows, reference),
-        val_data=variant_split(assay, splits.val, reference),
+        train_data=variant_split(assay, rows, readout, reference),
+        val_data=variant_split(assay, splits.val, readout, reference),
         readout=readout,  # type: ignore[arg-type]
         max_epochs=MAX_EPOCHS,
         lr=LORA_LEARNING_RATE,
@@ -417,7 +429,7 @@ def run_lora(
         lora=LORA_SPEC,
         seed=seed,
     )
-    test = variant_split(assay, splits.test, reference)
+    test = variant_split(assay, splits.test, readout, reference)
     predictions = predict_lora(
         encoder, head, test, readout, LORA_BATCH_SIZE  # type: ignore[arg-type]
     )
