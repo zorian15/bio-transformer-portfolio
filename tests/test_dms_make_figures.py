@@ -125,23 +125,64 @@ def test_curve_summary_still_averages_seeds() -> None:
     assert row["std"].item() > 0, "the spread across seeds is what the bar shows"
 
 
-def test_every_size_the_grid_runs_has_a_distinct_style() -> None:
+def test_every_size_the_grid_runs_has_a_distinct_encoding() -> None:
     """Cross-module guard: adding a size to the ladder must reach the figures.
 
     `SUPERVISED_CHECKPOINTS` is what the grid runs; these maps are what the
     figures can draw. Adding a third size to the grid without touching this
     file would otherwise plot it with whatever the lookup fell back to, and two
-    sizes sharing a linestyle are indistinguishable rather than absent, which
+    sizes sharing an encoding are indistinguishable rather than absent, which
     is the harder failure to spot.
+
+    All three maps, not just the linestyle. The hatch used to be assigned by
+    position ("" for the first size, "//" for every other), so a third size
+    shared the second one's bars: the same merge-two-sizes failure this file
+    exists to prevent, one figure over. Review caught it.
     """
     for checkpoint in run_arms.SUPERVISED_CHECKPOINTS:
         assert checkpoint in make_figures.CHECKPOINT_LABELS
         assert checkpoint in make_figures.CHECKPOINT_STYLES
+        assert checkpoint in make_figures.CHECKPOINT_HATCHES
 
-    styles = [
-        make_figures.CHECKPOINT_STYLES[c] for c in run_arms.SUPERVISED_CHECKPOINTS
-    ]
-    assert len(set(styles)) == len(styles), "two sizes share a linestyle"
+    for name in ("CHECKPOINT_LABELS", "CHECKPOINT_STYLES", "CHECKPOINT_HATCHES"):
+        encoding = getattr(make_figures, name)
+        drawn = [encoding[c] for c in run_arms.SUPERVISED_CHECKPOINTS]
+        assert len(set(drawn)) == len(drawn), f"two sizes share a value in {name}"
+
+
+def test_the_two_figures_order_the_sizes_the_same_way() -> None:
+    """One helper, because the two figures had reached for different expressions.
+
+    The curves sorted the checkpoint values alphabetically and the bars filtered
+    the style registry. Those agree only because "esm2_t12_35M" happens to sort
+    before "esm2_t33_650M", which is a coincidence of naming rather than
+    anything guaranteed, so the two figures would have disagreed about line and
+    bar order the first time a size was added that sorted differently.
+    """
+    frame = two_size_cell()
+    reversed_frame = frame.iloc[::-1].reset_index(drop=True)
+
+    order = make_figures.present_checkpoints(frame)
+
+    assert order == list(make_figures.CHECKPOINT_STYLES)
+    assert make_figures.present_checkpoints(reversed_frame) == order, (
+        "the order depends on how the rows happen to be arranged, so two "
+        "figures reading the same results can disagree"
+    )
+
+
+def test_present_checkpoints_refuses_a_size_it_cannot_draw() -> None:
+    """The guard has to fire wherever an unknown size first reaches a figure.
+
+    `checkpoint_label` asserts, but the bar figure indexes the hatch map
+    directly, so a results file carrying an unrecognised checkpoint would have
+    raised a bare KeyError there rather than the explanation.
+    """
+    frame = two_size_cell()
+    frame.loc[0, "checkpoint"] = "esm2_t36_3B_UR50D"
+
+    with pytest.raises(AssertionError, match="no figure label"):
+        make_figures.present_checkpoints(frame)
 
 
 def test_an_unknown_checkpoint_is_refused_rather_than_drawn() -> None:

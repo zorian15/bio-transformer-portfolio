@@ -52,6 +52,15 @@ CHECKPOINT_STYLES = {
     "esm2_t12_35M_UR50D": "-",
     "esm2_t33_650M_UR50D": "--",
 }
+# Bars cannot carry a linestyle, so the same distinction is a hatch there. A
+# registry rather than "" for the first size and "//" for the rest: assigning by
+# position means a third size silently shares the second one's hatch, which is
+# the merge-two-sizes-into-one failure this file was just fixed for, one figure
+# over. The tests cross-check all three maps against the grid's own sizes.
+CHECKPOINT_HATCHES = {
+    "esm2_t12_35M_UR50D": "",
+    "esm2_t33_650M_UR50D": "//",
+}
 
 log = get_logger("dms-make-figures")
 
@@ -76,6 +85,30 @@ def checkpoint_label(checkpoint: str) -> str:
         f"rather than sharing another size's encoding"
     )
     return CHECKPOINT_LABELS[checkpoint]
+
+
+def present_checkpoints(frame: pd.DataFrame) -> list[str]:
+    """Which sizes appear in `frame`, in the canonical figure order.
+
+    One helper rather than each figure working it out, because they had reached
+    for different expressions: one sorted the values alphabetically and the
+    other filtered the style registry. Those agree only because "esm2_t12_35M"
+    happens to sort before "esm2_t33_650M", so the two figures would have
+    disagreed about bar and line order the first time a size was added whose
+    name did not sort that way.
+
+    Args:
+        frame: any results frame carrying a `checkpoint` column.
+
+    Returns:
+        The checkpoints present, ordered as `CHECKPOINT_STYLES` lists them.
+    """
+    present = set(frame["checkpoint"])
+    for checkpoint in sorted(present):
+        # Reuse the label lookup's assertion rather than restating it, so an
+        # unrecognised size fails identically wherever it first reaches a figure.
+        checkpoint_label(checkpoint)
+    return [checkpoint for checkpoint in CHECKPOINT_STYLES if checkpoint in present]
 
 
 def curve_summary(cell: pd.DataFrame) -> pd.DataFrame:
@@ -152,7 +185,7 @@ def data_efficiency_figure(results: pd.DataFrame, destination: Path) -> None:
             for rung in ("frozen", "lora"):
                 if summary is None:
                     continue
-                for checkpoint in sorted(summary["checkpoint"].unique()):
+                for checkpoint in present_checkpoints(summary):
                     curve = summary[
                         (summary["rung"] == rung)
                         & (summary["checkpoint"] == checkpoint)
@@ -236,11 +269,7 @@ def readout_figure(results: pd.DataFrame, destination: Path) -> None:
     # Four bars per readout rather than two: rung by colour, size by hatch. A
     # flat mean over the cell used to average the two model sizes together,
     # which understated whichever size was better at every readout.
-    checkpoints = [c for c in CHECKPOINT_STYLES if c in set(supervised["checkpoint"])]
-    hatches = {
-        checkpoint: ("" if index == 0 else "//")
-        for index, checkpoint in enumerate(checkpoints)
-    }
+    checkpoints = present_checkpoints(supervised)
     width = 0.8 / max(len(checkpoints) * 2, 1)
 
     for column, scheme in enumerate(schemes):
@@ -262,7 +291,7 @@ def readout_figure(results: pd.DataFrame, destination: Path) -> None:
                 values,
                 width,
                 color=RUNG_COLOURS[rung],
-                hatch=hatches[checkpoint],
+                hatch=CHECKPOINT_HATCHES[checkpoint],
                 edgecolor="white",
                 label=f"{RUNG_LABELS[rung]} ({checkpoint_label(checkpoint)})",
             )

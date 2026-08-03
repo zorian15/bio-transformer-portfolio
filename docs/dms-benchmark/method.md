@@ -24,13 +24,18 @@ Each step changes exactly one thing. The headline is rung 2 to rung 3; rung 1 is
 what makes that number legible, because without a floor "supervision reached
 Spearman 0.6" says nothing.
 
-**All three rungs run the same checkpoint**, `esm2_t12_35M_UR50D`. This is the
-invariant the design rests on: if rung 3 ran at a larger size because a GPU made
-it affordable, the rung 2 to rung 3 delta would conflate adaptation with model
-scale. Rung 1 additionally reports 650M, which is a separate arm rather than a
-substitution inside the ladder, and costs almost nothing because masked-marginal
-scoring needs one forward pass per *distinct mutated position* rather than one
-per variant.
+**All three rungs run the same checkpoints**, `esm2_t12_35M_UR50D` and
+`esm2_t33_650M_UR50D`. This is the invariant the design rests on, and since issue
+#34 it is stated as "the same checkpoints on both supervised rungs" rather than
+"one checkpoint": checkpoint is a grid axis now, not a fixed constant, but the
+two supervised rungs still walk that axis together, so every rung-3 row has a
+rung-2 row at its own size and the rung 2 to rung 3 delta at either size never
+conflates adaptation with model scale. Checkpoint is the outermost axis of the
+supervised grid, so the two sizes are complete, disjoint halves of the array
+rather than interleaved. 650M exists to answer the objection a 35M-only result
+leaves standing, that the encoder was too small for adaptation to matter. Rung
+1 costs almost nothing at either size because masked-marginal scoring needs one
+forward pass per *distinct mutated position* rather than one per variant.
 
 **Rung 3's adapters** are rank 8, \(\alpha = 16\), attached to the `q_proj` and
 `v_proj` projections of every attention block. Those three values travel together
