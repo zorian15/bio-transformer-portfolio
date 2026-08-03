@@ -134,6 +134,28 @@ def curve_summary(cell: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def readout_summary(cell: pd.DataFrame) -> pd.DataFrame:
+    """Mean Spearman per (checkpoint, rung, readout), for the bar figure.
+
+    Extracted rather than left inline for the same reason as `curve_summary`,
+    and after review pointed out it had been missed: this is the *other* half of
+    the size-merging bug. The bar figure took a flat mean over each cell, so two
+    model sizes averaged into one bar exactly as the curves did. Inline, nothing
+    executed it and a regression to that flat mean would keep the suite green.
+
+    Args:
+        cell: supervised rows for one split scheme.
+
+    Returns:
+        One row per (checkpoint, rung, readout) with a `mean` column.
+    """
+    return (
+        cell.groupby(["checkpoint", "rung", "readout"], as_index=False)["spearman"]
+        .mean()
+        .rename(columns={"spearman": "mean"})
+    )
+
+
 def load_results(results_dir: Path) -> pd.DataFrame:
     """Concatenate whichever rung tables exist, so partial runs still plot."""
     frames = []
@@ -177,15 +199,13 @@ def data_efficiency_figure(results: pd.DataFrame, destination: Path) -> None:
             cell = results[(results["assay"] == assay) & (results["scheme"] == scheme)]
 
             supervised = cell[cell["rung"].isin(("frozen", "lora"))]
-            summary = curve_summary(supervised) if not supervised.empty else None
 
             # Colour carries the rung and linestyle carries the size, so the
             # rung-2-to-rung-3 comparison the ladder is about stays the visually
             # obvious one and scale reads as a secondary axis.
+            summary = curve_summary(supervised)
             for rung in ("frozen", "lora"):
-                if summary is None:
-                    continue
-                for checkpoint in present_checkpoints(summary):
+                for checkpoint in present_checkpoints(supervised):
                     curve = summary[
                         (summary["rung"] == rung)
                         & (summary["checkpoint"] == checkpoint)
@@ -205,7 +225,14 @@ def data_efficiency_figure(results: pd.DataFrame, destination: Path) -> None:
                         label=f"{RUNG_LABELS[rung]} ({checkpoint_label(checkpoint)})",
                     )
 
-            for _, line in cell[cell["rung"] == "zero_shot"].iterrows():
+            # Validated through the same helper as the supervised rows rather
+            # than indexing the style map directly. Rung 1 has its own list of
+            # sizes, which is the one most likely to grow on its own since a
+            # zero-shot arm is nearly free, and a direct lookup would fail with
+            # a bare KeyError from a figure whose docstring promises otherwise.
+            floors = cell[cell["rung"] == "zero_shot"]
+            present_checkpoints(floors)
+            for _, line in floors.iterrows():
                 checkpoint = str(line["checkpoint"])
                 axis.axhline(
                     line["spearman"],
@@ -274,18 +301,14 @@ def readout_figure(results: pd.DataFrame, destination: Path) -> None:
 
     for column, scheme in enumerate(schemes):
         axis = axes[0][column]
-        cell = supervised[supervised["scheme"] == scheme]
+        summary = readout_summary(supervised[supervised["scheme"] == scheme])
         bars = [(rung, c) for rung in ("frozen", "lora") for c in checkpoints]
         for position, (rung, checkpoint) in enumerate(bars):
             offset = (position - (len(bars) - 1) / 2) * width
-            values = [
-                cell[
-                    (cell["rung"] == rung)
-                    & (cell["readout"] == readout)
-                    & (cell["checkpoint"] == checkpoint)
-                ]["spearman"].mean()
-                for readout in readouts
-            ]
+            matched = summary[
+                (summary["rung"] == rung) & (summary["checkpoint"] == checkpoint)
+            ].set_index("readout")["mean"]
+            values = [matched.get(readout, float("nan")) for readout in readouts]
             axis.bar(
                 [index + offset for index in range(len(readouts))],
                 values,

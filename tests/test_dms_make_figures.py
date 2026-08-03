@@ -125,6 +125,52 @@ def test_curve_summary_still_averages_seeds() -> None:
     assert row["std"].item() > 0, "the spread across seeds is what the bar shows"
 
 
+def test_readout_summary_keeps_the_two_sizes_apart() -> None:
+    """The other half of the same bug, and the half review caught me missing.
+
+    `curve_summary` was extracted and tested; the bar figure's aggregation was
+    left inline, so nothing executed it and a regression to the flat
+    `cell[...]["spearman"].mean()` it replaced would have kept the suite green
+    while merging the two sizes into one bar per readout.
+    """
+    summary = make_figures.readout_summary(two_size_cell())
+
+    small = summary[
+        (summary["checkpoint"] == SMALL)
+        & (summary["rung"] == "lora")
+        & (summary["readout"] == "mean")
+    ]
+    large = summary[
+        (summary["checkpoint"] == LARGE)
+        & (summary["rung"] == "lora")
+        & (summary["readout"] == "mean")
+    ]
+
+    assert len(small) == 1 and len(large) == 1
+    assert small["mean"].item() == pytest.approx(0.25)
+    assert large["mean"].item() == pytest.approx(0.65)
+    # 0.45 is the midpoint a flat mean over the cell would have produced.
+    assert small["mean"].item() != pytest.approx(0.45)
+
+
+def test_readout_summary_gives_one_bar_per_rung_and_size() -> None:
+    """Four bars per readout with two sizes, not two.
+
+    The bar count is the visible symptom of the merge: two bars where there
+    should be four is a figure that silently answers a different question.
+    """
+    summary = make_figures.readout_summary(two_size_cell())
+    per_readout = summary[summary["readout"] == "mean"]
+
+    assert len(per_readout) == 4, "expected frozen and lora at each of two sizes"
+    assert set(zip(per_readout["rung"], per_readout["checkpoint"])) == {
+        ("frozen", SMALL),
+        ("frozen", LARGE),
+        ("lora", SMALL),
+        ("lora", LARGE),
+    }
+
+
 def test_every_size_the_grid_runs_has_a_distinct_encoding() -> None:
     """Cross-module guard: adding a size to the ladder must reach the figures.
 
@@ -139,14 +185,20 @@ def test_every_size_the_grid_runs_has_a_distinct_encoding() -> None:
     shared the second one's bars: the same merge-two-sizes failure this file
     exists to prevent, one figure over. Review caught it.
     """
-    for checkpoint in run_arms.SUPERVISED_CHECKPOINTS:
+    # Both tuples, not only the supervised one. Rung 1 keeps its own list and is
+    # the one most likely to grow alone, since a zero-shot arm at a new size is
+    # nearly free, and the figure draws its floors from that list.
+    every_size = tuple(
+        dict.fromkeys(run_arms.SUPERVISED_CHECKPOINTS + run_arms.ZERO_SHOT_CHECKPOINTS)
+    )
+    for checkpoint in every_size:
         assert checkpoint in make_figures.CHECKPOINT_LABELS
         assert checkpoint in make_figures.CHECKPOINT_STYLES
         assert checkpoint in make_figures.CHECKPOINT_HATCHES
 
     for name in ("CHECKPOINT_LABELS", "CHECKPOINT_STYLES", "CHECKPOINT_HATCHES"):
         encoding = getattr(make_figures, name)
-        drawn = [encoding[c] for c in run_arms.SUPERVISED_CHECKPOINTS]
+        drawn = [encoding[c] for c in every_size]
         assert len(set(drawn)) == len(drawn), f"two sizes share a value in {name}"
 
 

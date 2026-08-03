@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=biotp-lora
-#SBATCH --partition=chorus         # L40S (48 GB), best for fine-tunes / larger models
-#SBATCH --gres=gpu:1               # one card per task; LoRA on 35M needs nothing more
+#SBATCH --partition=chorus         # L40S (48 GB). Required, not preferred, since #34
+#SBATCH --gres=gpu:1               # one card per task; LoRA on 650M fits an L40S
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH --array=0-647%16
 # Into slurm-logs/, which is tracked but whose contents are gitignored.
 # SLURM resolves this path before the script runs and will not create the
@@ -55,10 +55,22 @@
 # By checkpoint: 650M is 33 layers x 1280 wide against 35M's 12 x 480, so
 # roughly (33/12) * (1280/480)^2 ~ 19x the FLOPs per token. That puts the worst
 # 650M task near 2 h rather than 10 minutes, which is why one hour is no longer
-# slack but a ceiling the expensive half would hit. Six hours is the new slack.
-# A task that exceeds it is killed and writes no shard, and --aggregate then
-# names the missing configuration rather than writing a short file, so the
-# failure is loud; it is still a wasted allocation.
+# slack but a ceiling the expensive half would hit.
+#
+# Twelve hours rather than six, because six only covers the case early stopping
+# fires. The worst arm is ~2.6 PFLOP per epoch at 650M; at a realistic 15-40
+# TFLOPS that is 64-171 s per epoch, so an arm that runs the full MAX_EPOCHS=200
+# takes 3.6 to 9.5 h and a six-hour ceiling lands inside that range rather than
+# above it. Every 35M arm did stop early (11 to 110 epochs), which is the reason
+# to expect it here too and not a reason to bet 324 allocations on it. A task
+# that exceeds the limit is killed and writes no shard; --aggregate then names
+# the missing configuration rather than writing a short file, so the failure is
+# loud, but the allocation is still wasted. The smoke test's `epochs_run`
+# settles which regime 650M is in.
+#
+# Partition is no longer a preference. 650M in fp32 with adapters and activations
+# does not fit the 11 GB cards on campus-new, so the fallback the comment above
+# used to offer applies to the 35M half only.
 set -euo pipefail
 
 # Same env as local. biotp.utils.get_device() picks cuda here, mps on the laptop.
