@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=biotp-lora
-#SBATCH --partition=chorus         # L40S (48 GB), best for fine-tunes / larger models
-#SBATCH --gres=gpu:1               # one card per task; LoRA on 35M needs nothing more
+#SBATCH --partition=chorus         # L40S (48 GB). Required, not preferred, since #34
+#SBATCH --gres=gpu:1               # one card per task; LoRA on 650M fits an L40S
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=01:00:00
-#SBATCH --array=0-323%16
+#SBATCH --time=12:00:00
+#SBATCH --array=0-647%16
 # Into slurm-logs/, which is tracked but whose contents are gitignored.
 # SLURM resolves this path before the script runs and will not create the
 # directory, so it is kept in the repo by slurm-logs/.gitkeep. Paths are
@@ -15,27 +15,62 @@
 # models or LoRA on ESM-2 <= 150M. Check limits with: scontrol show partition <name>.
 # If a job is rejected for QOS, add a line like: #SBATCH --qos=normal
 #
-# --array=0-323 is rung 3's whole grid: 3 assays x 3 schemes x 3 readouts x 4
-# training sizes x 3 seeds. Do not retype 324 from memory; regenerate it with
+# --array=0-647 is rung 3's whole grid: 2 checkpoints x 3 assays x 3 schemes x 3
+# readouts x 4 training sizes x 3 seeds. Do not retype 648 from memory;
+# regenerate it with
 #   python projects/dms-benchmark/scripts/run_arms.py --rung lora --grid-size
 # and change the bound in the same commit that changes an axis. A bound set too
 # low finishes cleanly having skipped configurations, which is exactly the silent
 # shortfall --aggregate refuses to write.
+# tests/test_dms_run_arms.py::test_the_documented_lora_array_bound_is_the_real_one
+# compares this literal against the grid, so the two cannot drift.
+#
+# Checkpoint is the outermost grid axis, so tasks 0-323 are 650M and 324-647
+# are 35M. SLURM dispatches an array in ascending index order, so this puts the
+# expensive half first on purpose: 650M is the deliverable and 35M is a
+# reproduction check of an already-published result. An array that is cancelled
+# or preempted part way then leaves the result we came for. Note that a range
+# list like --array=324-647,0-323 would NOT achieve this; SLURM schedules by
+# index, not by the order the ranges are written.
+#
+# To run one half alone: --array=0-323%16 is 650M, --array=324-647%16 is 35M.
 #
 # MaxArraySize on this cluster is 50001 (scontrol show config | grep MaxArraySize),
-# so 324 is nowhere near the limit and needs no chunking.
+# so 648 is nowhere near the limit and needs no chunking.
 #
 # %16 caps concurrently running tasks. It is a courtesy to the partition rather
 # than a correctness constraint: tasks are independent and write to separate
 # files, so any value is safe. Raise it if the queue is empty.
 #
-# --time is per task, not for the whole array, and tasks are far from uniform.
-# Per-epoch encoder work scales as 3N + 256, so across N in (32, 128, 512, 2048)
-# the per-epoch costs are 352, 640, 1792 and 6400: the N=2048 arms are 18x the
-# N=32 ones and take about 70% of a full N curve between them. Against the
+# --time is per task, not for the whole array, and tasks are far from uniform in
+# two dimensions now.
+#
+# By N: per-epoch encoder work scales as 3N + 256, so across N in (32, 128, 512,
+# 2048) the per-epoch costs are 352, 640, 1792 and 6400. The N=2048 arms are 18x
+# the N=32 ones and take about 70% of a full N curve between them. Against the
 # measured 1.76 h per (assay, scheme, readout, seed) curve on MPS, that is ~1.2 h
-# for the worst task and ~4 minutes for the cheapest. An L40S is 8-15x faster,
-# putting the worst case at 5 to 10 minutes. One hour is slack, not an estimate.
+# for the worst 35M task and ~4 minutes for the cheapest. An L40S is 8-15x
+# faster, putting the worst 35M case at 5 to 10 minutes.
+#
+# By checkpoint: 650M is 33 layers x 1280 wide against 35M's 12 x 480, so
+# roughly (33/12) * (1280/480)^2 ~ 19x the FLOPs per token. That puts the worst
+# 650M task near 2 h rather than 10 minutes, which is why one hour is no longer
+# slack but a ceiling the expensive half would hit.
+#
+# Twelve hours rather than six, because six only covers the case early stopping
+# fires. The worst arm is ~2.6 PFLOP per epoch at 650M; at a realistic 15-40
+# TFLOPS that is 64-171 s per epoch, so an arm that runs the full MAX_EPOCHS=200
+# takes 3.6 to 9.5 h and a six-hour ceiling lands inside that range rather than
+# above it. Every 35M arm did stop early (11 to 110 epochs), which is the reason
+# to expect it here too and not a reason to bet 324 allocations on it. A task
+# that exceeds the limit is killed and writes no shard; --aggregate then names
+# the missing configuration rather than writing a short file, so the failure is
+# loud, but the allocation is still wasted. The smoke test's `epochs_run`
+# settles which regime 650M is in.
+#
+# Partition is no longer a preference. 650M in fp32 with adapters and activations
+# does not fit the 11 GB cards on campus-new, so the fallback the comment above
+# used to offer applies to the 35M half only.
 set -euo pipefail
 
 # Same env as local. biotp.utils.get_device() picks cuda here, mps on the laptop.

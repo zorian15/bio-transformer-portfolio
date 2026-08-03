@@ -24,13 +24,18 @@ Each step changes exactly one thing. The headline is rung 2 to rung 3; rung 1 is
 what makes that number legible, because without a floor "supervision reached
 Spearman 0.6" says nothing.
 
-**All three rungs run the same checkpoint**, `esm2_t12_35M_UR50D`. This is the
-invariant the design rests on: if rung 3 ran at a larger size because a GPU made
-it affordable, the rung 2 to rung 3 delta would conflate adaptation with model
-scale. Rung 1 additionally reports 650M, which is a separate arm rather than a
-substitution inside the ladder, and costs almost nothing because masked-marginal
-scoring needs one forward pass per *distinct mutated position* rather than one
-per variant.
+**All three rungs run the same checkpoints**, `esm2_t12_35M_UR50D` and
+`esm2_t33_650M_UR50D`. This is the invariant the design rests on, and since issue
+#34 it is stated as "the same checkpoints on both supervised rungs" rather than
+"one checkpoint": checkpoint is a grid axis now, not a fixed constant, but the
+two supervised rungs still walk that axis together, so every rung-3 row has a
+rung-2 row at its own size and the rung 2 to rung 3 delta at either size never
+conflates adaptation with model scale. Checkpoint is the outermost axis of the
+supervised grid, so the two sizes are complete, disjoint halves of the array
+rather than interleaved. 650M exists to answer the objection a 35M-only result
+leaves standing, that the encoder was too small for adaptation to matter. Rung
+1 costs almost nothing at either size because masked-marginal scoring needs one
+forward pass per *distinct mutated position* rather than one per variant.
 
 **Rung 3's adapters** are rank 8, \(\alpha = 16\), attached to the `q_proj` and
 `v_proj` projections of every attention block. Those three values travel together
@@ -106,6 +111,82 @@ Each arm records the realized number of **distinct training positions** alongsid
 \(N\). Under `contiguous` a small draw covers few sites, so a flat point on the
 curve may be a site-coverage limit rather than a label-count limit, and only that
 number tells the two apart.
+
+## Reporting contrasts
+
+The numbers a reader should judge the ladder on are not the per-arm Spearman
+values: they are the **differences between rungs**. Those are produced by
+`analyse_contrasts.py` into `results/contrasts.csv`, so every figure quoted in
+the results traces to a committed artifact rather than to an analysis someone
+ran once.
+
+**Pairing.** A contrast is only meaningful between two arms that saw the same
+data, so rung 3 is matched to rung 2 on
+\((\text{checkpoint}, \text{assay}, \text{scheme}, \text{readout}, N)\). The two
+arms in a pair differ in exactly one respect, whether the encoder was allowed to
+adapt, which is the whole design. Seeds are averaged *before* pairing: three
+seeds are three draws of one experiment, and treating them as three observations
+would report \(n=324\) where there are 108 configurations, narrowing every
+interval for free.
+
+**The test is Wilcoxon signed-rank**, not a paired \(t\)-test. Writing
+\(d_i\) for the \(i\)-th paired difference and \(R_i\) for the rank of \(|d_i|\)
+among all \(|d|\), the statistic is
+
+\[
+W^{+} = \sum_{i \,:\, d_i > 0} R_i
+\]
+
+compared against its null distribution. A \(t\)-test would assume the
+differences are approximately normal. They are not: these are differences of
+**bounded** rank correlations, they concentrate near zero, and nothing about the
+design makes normality plausible. Signed-rank assumes only that the difference
+distribution is symmetric about its centre, which is a far weaker claim. It is
+also not an \(F\)-test: an \(F\) statistic answers the omnibus question "does
+this factor explain variance", where the question here is one pre-registered,
+matched comparison.
+
+**A win rate is reported beside every mean**, the fraction of pairs where the
+higher rung won. It is nearly assumption-free, so a mean that disagrees with it
+is being carried by a few arms rather than by a consistent effect. Reading the
+two together catches that; reading either alone does not.
+
+**The \(p\)-value is not the last word, and is reported as anti-conservative.**
+Wilcoxon assumes the pairs are independent. Ours are not: 108 configurations
+rest on **three assays**, and the per-assay differences change sign. A
+\(p\)-value computed over configurations answers "did LoRA win on these three
+proteins", which is not the question a reader has.
+
+So every cell also carries a 95% interval computed at the **assay** level. With
+\(\bar d_k\) the mean difference within assay \(k\), the estimator is the mean of
+the \(K\) assay means and the interval is
+
+\[
+\bar d_{\bullet} \;\pm\; t_{0.975,\,K-1}\,\frac{s\big(\bar d_1, \dots, \bar d_K\big)}{\sqrt{K}}
+\]
+
+At \(K = 3\) the multiplier is \(t_{0.975,2} = 4.303\), so these intervals are
+wide. **That width is the finding, not a defect of the method.** Three proteins
+cannot support a narrow interval, and the table reports the three per-assay
+means alongside (`assay_min`, `assay_max`) so a reader can see the spread the
+interval is estimated from rather than take it on trust.
+
+Two things follow, and both are stated plainly in the results:
+
+- Where a small \(p\) sits beside an interval covering zero, **the interval is
+  the honest reading**. The \(p\) describes this cohort; the interval describes
+  what would generalise.
+- No scheme-level contrast at 35M excludes zero once clustering is accounted
+  for, including the one whose \(p\) is \(1.5 \times 10^{-4}\).
+
+**A percentile bootstrap over assays was tried first and is wrong here**, which
+is worth recording because it looks more sophisticated than it is. Resampling
+three clusters with replacement puts probability \(1/27 = 3.7\%\) on drawing the
+same assay three times, which exceeds \(2.5\%\), so the 2.5th and 97.5th
+percentiles collapse exactly onto the smallest and largest assay mean. The
+interval degenerates into the range of three numbers, the replicate count and
+seed stop doing anything, and the result is *narrower* than the \(t\) interval
+above rather than more conservative.
 
 ## Cohort
 

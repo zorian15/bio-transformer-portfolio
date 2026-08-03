@@ -10,13 +10,25 @@
 
 ## Templates
 - `submit-embed.sh`: extract and cache ESM-2 embeddings (the main one-off). Run it at every model size you might want, so the cached vectors survive even if cluster access ends.
-- `submit-finetune.sh`: rung 3 of the DMS ladder as a 324-task job array, one configuration per task. See "Running rung 3 as an array" below.
+- `submit-frozen.sh`: rung 2 of the DMS ladder, one job over the whole grid. Deliberately not an array: the embedding cache is the expensive part, and one process embeds each assay once where an array would take the same cache miss in every task.
+- `submit-finetune.sh`: rung 3 of the DMS ladder as a 648-task job array, one configuration per task. See "Running rung 3 as an array" below.
 
 Edit the `#SBATCH` directives (partition, account, time, resources) for your cluster before submitting, then `sbatch slurm/submit-embed.sh`.
 
+## The ladder runs at two sizes
+
+Since issue #34 both supervised rungs run at `esm2_t12_35M_UR50D` and `esm2_t33_650M_UR50D`, so each rung's grid is 648 configurations rather than 324. Checkpoint is the outermost axis, which fixes the task layout:
+
+| task ids | checkpoint | why this half |
+|---|---|---|
+| 0-323 | `esm2_t33_650M_UR50D` | the deliverable; ~19x the FLOPs per token |
+| 324-647 | `esm2_t12_35M_UR50D` | reproduction check of an already-published result |
+
+650M takes the low indices because SLURM dispatches an array in ascending index order, so an array that is cancelled, preempted or cut short by the end of an allocation leaves the result we came for. Run one half alone with `--array=0-323%16` or `--array=324-647%16`.
+
 ## Running rung 3 as an array
 
-`submit-finetune.sh` is a job array over the whole rung-3 grid: one task is one configuration, 324 of them. The mapping from `$SLURM_ARRAY_TASK_ID` to a configuration lives in `run_arms.py` and is covered by tests, so nothing here does arithmetic on the index.
+`submit-finetune.sh` is a job array over the whole rung-3 grid: one task is one configuration, 648 of them. The mapping from `$SLURM_ARRAY_TASK_ID` to a configuration lives in `run_arms.py` and is covered by tests, so nothing here does arithmetic on the index.
 
 ### Building the environment
 
@@ -110,7 +122,7 @@ Finally, point the batch scripts at it rather than editing them:
 export BIOTP_ENV_ACTIVATE=/fh/fast/<lab>/<user>/biollm-venv/bin/activate
 ```
 
-Unset, they run `conda activate biollm`. Set, they source that file and exit non-zero if it does not exist, so a wrong path fails once at submit-test time instead of 324 times in parallel. Put the export in your shell profile, or re-run it in every session that submits.
+Unset, they run `conda activate biollm`. Set, they source that file and exit non-zero if it does not exist, so a wrong path fails once at submit-test time instead of 648 times in parallel. Put the export in your shell profile, or re-run it in every session that submits.
 
 If `uv venv` reports `Directory not empty` deleting an existing venv, the old one is still activated in your shell and NFS has silly-renamed its open files to `.nfsXXXX`. `deactivate`, then `rm -rf`.
 
@@ -129,35 +141,50 @@ Both printed paths must be inside the environment you meant to build. A `torch._
 
 ```bash
 # 1. Stage the data. Rung 3 needs exactly two files, about 600 KB: it calls
-#    load_esm2 directly and never touches the embedding cache, so the
-#    dms_embeddings/ (63 MB) and embeddings/ (169 MB) trees are for rungs 1-2
-#    and are dead weight here. Run this from the machine that has the data.
+#    load_esm2 directly and never touches the embedding cache. Rung 2 needs the
+#    same two, and builds its own dms_embeddings/ cache on the cluster, so
+#    there is no reason to copy that tree over. Run this from the machine that
+#    has the data.
 rsync -avP data/processed/proteingym_variants.parquet \
            data/processed/proteingym_assays.json \
            user@cluster:/path/to/bio-transformer-portfolio/data/processed/
 
-# 2. Pre-warm the checkpoint cache, or 324 tasks each try to download ESM-2 on
-#    first use. Somewhere the compute nodes can read, and not $HOME: 324 tasks
-#    reading ~130 MB each over NFS is worth avoiding.
+# 2. Pre-warm the checkpoint cache, or 648 tasks each try to download ESM-2 on
+#    first use. Somewhere the compute nodes can read, and not $HOME: 648 tasks
+#    reading over NFS is worth avoiding, and 650M is ~2.5 GB rather than 130 MB.
+#    Both sizes: the ladder runs at both, and the 650M half holds the low task
+#    ids, so a missing 650M checkpoint fails first and in bulk.
 export TORCH_HOME=/fh/fast/<lab>/<user>/torch-cache
 python -c "from biotp.embeddings import load_esm2; load_esm2('esm2_t12_35M_UR50D')"
+python -c "from biotp.embeddings import load_esm2; load_esm2('esm2_t33_650M_UR50D')"
 
-# 3. Run one task by hand before submitting 324. The #SBATCH lines are comments
+# 3. Run one task by hand before submitting 648. The #SBATCH lines are comments
 #    to bash, so this takes exactly the path the scheduler would, including the
 #    environment activation, which is the part most likely to be wrong.
 #
-#    Task 267 is the configuration recorded in DECISION_LOG.md, so it has a known
-#    answer to check against rather than only "it did not crash". On a login node
-#    with no GPU, prefix with: srun -p chorus --gres=gpu:1
-SLURM_ARRAY_TASK_ID=267 bash slurm/submit-finetune.sh
+#    Task 591 is the configuration recorded in DECISION_LOG.md, so it has a
+#    known answer to check against rather than only "it did not crash". It used
+#    to be task 267; the 35M half moved to 324-647 when the 650M half took the
+#    low indices, and 267 now names the same configuration at 650M. On a login
+#    node with no GPU, prefix with: srun -p chorus --gres=gpu:1
+SLURM_ARRAY_TASK_ID=591 bash slurm/submit-finetune.sh
 cat projects/dms-benchmark/results/lora_shards/lora-R1AB_SARS2_Flynn_2022-fold_modulo_5-at_position-n128-seed0-esm2_t12_35M_UR50D.csv
+
+# 4. Then run its 650M counterpart, task 267, before committing 324 expensive
+#    tasks to a path nothing has executed. 650M is where memory, walltime and
+#    the checkpoint download can all fail for the first time, and the last
+#    submission of this array lost 216 tasks to a bug one task would have shown.
+SLURM_ARRAY_TASK_ID=267 bash slurm/submit-finetune.sh
+cat projects/dms-benchmark/results/lora_shards/lora-R1AB_SARS2_Flynn_2022-fold_modulo_5-at_position-n128-seed0-esm2_t33_650M_UR50D.csv
 ```
 
-Three things to read off that row, in order of what they catch:
+Three things to read off the 35M row, in order of what they catch:
 
 - `trainable_encoder_parameters` is **184320**. Anything else and the adapters did not attach, which still trains the head and still reports a plausible number.
 - `spearman` is near **0.179**. Not identical: that reference was measured on MPS, and CUDA differs in floating point. Treat a few thousandths as expected and a sign flip as a problem.
-- `epochs_run` is well under 200. The one-hour walltime assumes early stopping fires; if a run goes the distance, the N=2048 arms will hit the limit.
+- `epochs_run` is well under 200. The walltime assumes early stopping fires; if a run goes the distance, the N=2048 arms will hit the limit.
+
+The 650M row has no published reference to compare against, so read it for shape rather than value: `trainable_encoder_parameters` should be **1351680** (rank 8 on `q_proj`/`v_proj` gives \(2 \times 8 \times 1280 = 20480\) per module, two modules across 33 layers of width 1280; the same formula gives 184320 for 35M's 12 layers of width 480, which is how it was checked), `spearman` should be finite and positive, and the wall time tells you whether six hours per task is really enough for the N=2048 arms.
 
 Confirm you got a CUDA build while you are here, since a CPU build does not error, it just runs the array about 50x slow:
 
@@ -165,11 +192,32 @@ Confirm you got a CUDA build while you are here, since a CPU build does not erro
 python -c "from biotp.utils import get_device; print(get_device(prefer_gpu=True))"   # expect: cuda
 ```
 
-### Submitting
+### Submitting rung 2
+
+Independent of rung 3, so submit it first and let it run alongside: it is one
+job, it competes for one GPU rather than sixteen, and rung 3 never reads its
+output.
+
+```bash
+FROZEN_JOB=$(sbatch --parsable slurm/submit-frozen.sh)
+
+# One process writes results/frozen.csv directly, so there is nothing to
+# aggregate. Watch it with:
+tail -f slurm-logs/biotp-frozen-"$FROZEN_JOB".out
+```
+
+Rung 1 is nearly free and needs no allocation of its own; run it on a login node
+once rung 2's embedding cache exists:
+
+```bash
+python projects/dms-benchmark/scripts/run_arms.py --rung zero_shot --all
+```
+
+### Submitting rung 3
 
 ```bash
 # The array bound comes from the code, never from memory. Prints just the number.
-python projects/dms-benchmark/scripts/run_arms.py --rung lora --grid-size   # 324
+python projects/dms-benchmark/scripts/run_arms.py --rung lora --grid-size   # 648
 
 ARRAY_JOB=$(sbatch --parsable slurm/submit-finetune.sh)
 
@@ -201,7 +249,7 @@ Submit from the repo root. SLURM writes each task's stdout and stderr to `slurm-
 ```bash
 squeue -u "$USER"
 sacct -j "$ARRAY_JOB" --format=JobID,State,ExitCode | grep -v COMPLETED   # failures only
-ls projects/dms-benchmark/results/lora_shards/*.csv | wc -l               # want 324
+ls projects/dms-benchmark/results/lora_shards/*.csv | wc -l               # want 648
 ```
 
 `afterok` means any failed task blocks aggregation, deliberately, so a short result cannot appear quietly. If some fail, fix the cause, resubmit just those indices, and then aggregate by hand since the dependency job will already have been cancelled:
