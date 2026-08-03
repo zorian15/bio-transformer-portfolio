@@ -368,7 +368,7 @@ def test_seed_dependent_blocks_are_never_shuffled() -> None:
     )
 
 
-def test_project_one_trains_at_its_documented_batch_size(monkeypatch) -> None:
+def test_project_one_trains_at_its_documented_settings(monkeypatch) -> None:
     """The bit-for-bit guarantee currently rests on a comment; this enforces it.
 
     `train` gained a required `batch_size` in issue #33, and this call site passes
@@ -400,4 +400,11 @@ def test_project_one_trains_at_its_documented_batch_size(monkeypatch) -> None:
     assert seen["batch_size"] == run_arms.BATCH_SIZE == 256, (
         "Project 1 must keep training at 256; its committed results were produced "
         "at that batch size and nothing else pins it"
+    )
+    # Same provenance argument, same sentence in the experiment log: Project 1's
+    # arms are recorded as "max 200 epochs with patience 10". Patience is pinned
+    # in `test_training.py`, and this is the half that lives out here.
+    assert seen["max_epochs"] == run_arms.MAX_EPOCHS == 200, (
+        "Project 1 must keep its 200-epoch ceiling; early stopping usually ends "
+        "a run sooner, so a lower cap moves only the arms that did not stop"
     )
