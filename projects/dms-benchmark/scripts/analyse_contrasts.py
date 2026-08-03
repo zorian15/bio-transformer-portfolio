@@ -64,13 +64,19 @@ CONTRASTS = (
 # name, and chosen so it cannot collide with one.
 ALL_SCHEMES = "all"
 
-# Bootstrap settings for the assay-clustered interval. Ten thousand is well past
-# the point where percentile endpoints stop moving; the limit on precision here
-# is three clusters, not the replicate count. The seed is fixed because this
-# writes a committed artifact and a table whose intervals moved between runs
-# would be untraceable.
-BOOTSTRAP_RESAMPLES = 10_000
-BOOTSTRAP_SEED = 0
+# Coverage of the assay-clustered interval.
+#
+# **Not a bootstrap, deliberately, and this was got wrong once.** The first
+# version drew assays with replacement and took the 2.5th and 97.5th percentiles
+# of the resampled means. With three clusters that is degenerate: the chance of
+# every draw landing on one assay is 1/27 = 3.7%, which is larger than 2.5%, so
+# both percentiles collapse onto the smallest and largest per-assay mean. The
+# interval was therefore exactly the range of three numbers, the resample count
+# and seed did nothing, and it was *narrower* than any honest small-K method
+# while being documented as the conservative counterweight to Wilcoxon. Review
+# caught it; verified against the committed table, where the reported bounds
+# equalled min and max of the assay means on every row.
+CONFIDENCE = 0.95
 
 
 def seed_averaged(frame: pd.DataFrame) -> pd.DataFrame:
@@ -131,11 +137,19 @@ def paired(results: pd.DataFrame, left_rung: str, right_rung: str) -> pd.DataFra
         left, right = seed_averaged(left), seed_averaged(right)
 
     merged = left.merge(right, on=keys, how="inner", suffixes=("_left", "_right"))
-    assert len(merged) == len(left), (
-        f"{len(left)} {left_rung} configurations but {len(merged)} matched a "
-        f"{right_rung} one on {keys}; the grid is incomplete, and pairing over "
-        f"the survivors would report a contrast on a different set of "
-        f"configurations than the one it names"
+    # Both directions. Checking only `len(merged) == len(left)` catches rows
+    # missing from the right rung and silently accepts rows missing from the
+    # left one, because a shorter left side simply matches itself. That is the
+    # wrong way round: the left rung of the headline contrast is LoRA, which is
+    # the expensive one and therefore the one whose SLURM tasks actually die.
+    # Verified by dropping LoRA rows, which produced a clean table with a
+    # quietly reduced n before this was symmetric.
+    expected = len(left) if right_rung == "zero_shot" else max(len(left), len(right))
+    assert len(merged) == expected, (
+        f"{len(left)} {left_rung} and {len(right)} {right_rung} configurations "
+        f"produced {len(merged)} pairs on {keys}; the grid is incomplete, and "
+        f"pairing over the survivors would report a contrast on a different set "
+        f"of configurations than the one it names"
     )
 
     merged["delta"] = merged["spearman_left"] - merged["spearman_right"]
@@ -143,48 +157,58 @@ def paired(results: pd.DataFrame, left_rung: str, right_rung: str) -> pd.DataFra
 
 
 def clustered_interval(
-    subset: pd.DataFrame, resamples: int, seed: int
+    subset: pd.DataFrame, confidence: float
 ) -> tuple[float | None, float | None]:
-    """Percentile bootstrap interval, resampling whole assays rather than rows.
+    """Cluster-level t interval, treating each assay as one observation.
 
-    This is the number that qualifies the headline, and the reason it exists is
-    that the Wilcoxon p beside it is anti-conservative. That test assumes the
-    pairs are independent; ours are not. The 108 seed-averaged configurations
-    rest on three assays, the per-assay deltas change sign, and a scheme-level
-    claim therefore has an effective n nearer 3 than 36. Resampling rows would
-    inherit exactly that false confidence, so the resampling unit is the assay:
-    draw assays with replacement, keep every row belonging to a drawn assay, and
-    recompute the mean.
+    This is the number that qualifies the headline, and it exists because the
+    Wilcoxon p beside it is anti-conservative. That test assumes the pairs are
+    independent; ours are not. The seed-averaged configurations rest on three
+    assays and the per-assay deltas change sign, so the effective sample size
+    for a claim about proteins in general is the number of assays, not the
+    number of configurations.
 
-    With three assays the interval is coarse by construction, since there are
-    only ten distinct multisets to draw. That coarseness is the finding rather
-    than a defect of the method: it is what "effective n is nearer 3" means, and
-    an interval that looked smooth would be describing a precision the design
-    does not have.
+    So the estimator is the mean of the \\(K\\) per-assay means, its standard
+    error is their sample standard deviation over \\(\\sqrt{K}\\), and the
+    interval uses \\(t\\) with \\(K-1\\) degrees of freedom. At \\(K=3\\) that
+    multiplier is 4.303, which is why the intervals are wide: three clusters
+    genuinely cannot support a narrow one. **That width is the finding**, not a
+    defect of the method. An interval that looked tight here would be
+    describing precision this cohort does not have.
 
     Args:
         subset: paired rows carrying `delta` and the `assay` they came from.
-        resamples: bootstrap replicates to draw.
-        seed: fixes the draw, so a committed artifact is reproducible.
+        confidence: coverage, e.g. 0.95.
 
     Returns:
-        The 2.5th and 97.5th percentiles of the resampled means, or
-        (None, None) when there is only one cluster and resampling it would
-        return the same mean every time rather than an interval.
+        The interval bounds, or (None, None) with one cluster, where a spread
+        cannot be estimated at all and any number printed would be invented.
     """
-    clusters = [group["delta"].to_numpy() for _, group in subset.groupby("assay")]
-    if len(clusters) < 2:
+    from scipy import stats
+
+    sizes = subset.groupby("assay")["delta"].size().to_numpy()
+    means = subset.groupby("assay")["delta"].mean().to_numpy()
+    if len(means) < 2:
         return (None, None)
 
-    rng = np.random.default_rng(seed)
-    drawn = rng.integers(0, len(clusters), size=(resamples, len(clusters)))
-    means = np.array(
-        [np.concatenate([clusters[index] for index in row]).mean() for row in drawn]
+    # Equal cluster sizes are what make the mean of the assay means equal the
+    # mean over rows that the table reports beside this interval. The grid gives
+    # every assay the same configurations, so an imbalance means the results are
+    # incomplete rather than that a weighted estimator is needed.
+    assert len(set(sizes.tolist())) == 1, (
+        f"assays contribute unequal numbers of configurations ({sorted(sizes)}); "
+        f"the interval is centred on the mean of assay means, which no longer "
+        f"matches the mean over rows reported beside it"
     )
-    return (float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5)))
+
+    half_width = stats.t.ppf(0.5 + confidence / 2.0, len(means) - 1) * (
+        means.std(ddof=1) / np.sqrt(len(means))
+    )
+    centre = float(means.mean())
+    return (centre - float(half_width), centre + float(half_width))
 
 
-def summarise(subset: pd.DataFrame, resamples: int, seed: int) -> dict[str, Any]:
+def summarise(subset: pd.DataFrame, confidence: float) -> dict[str, Any]:
     """Every reported figure for one set of paired differences.
 
     Wilcoxon signed-rank rather than a paired t-test: these are differences of
@@ -198,8 +222,7 @@ def summarise(subset: pd.DataFrame, resamples: int, seed: int) -> dict[str, Any]
 
     Args:
         subset: paired rows carrying `delta` and `assay`.
-        resamples: bootstrap replicates for the clustered interval.
-        seed: fixes the bootstrap draw.
+        confidence: coverage for the assay-clustered interval.
 
     Returns:
         The summary fields. `p_value` is None when the test cannot run, which
@@ -213,7 +236,8 @@ def summarise(subset: pd.DataFrame, resamples: int, seed: int) -> dict[str, Any]
     if len(values) >= 2 and np.any(values != 0.0):
         p_value = float(stats.wilcoxon(values).pvalue)
 
-    low, high = clustered_interval(subset, resamples, seed)
+    low, high = clustered_interval(subset, confidence)
+    assay_means = subset.groupby("assay")["delta"].mean()
     return {
         "n_pairs": len(values),
         "n_assays": int(subset["assay"].nunique()),
@@ -223,6 +247,12 @@ def summarise(subset: pd.DataFrame, resamples: int, seed: int) -> dict[str, Any]
         "p_value": p_value,
         "ci_low": low,
         "ci_high": high,
+        # The raw spread the interval is estimated from. Reported because with
+        # three assays these three numbers are more informative than any
+        # interval derived from them, and because seeing them makes it obvious
+        # when the per-assay effects disagree in sign.
+        "assay_min": float(assay_means.min()),
+        "assay_max": float(assay_means.max()),
         # The honest headline. A Wilcoxon p below 0.05 whose clustered interval
         # straddles zero is a claim the design cannot support, and that
         # combination is exactly what happened on two of three schemes at 35M.
@@ -234,7 +264,7 @@ def summarise(subset: pd.DataFrame, resamples: int, seed: int) -> dict[str, Any]
     }
 
 
-def contrast_table(results: pd.DataFrame, resamples: int, seed: int) -> pd.DataFrame:
+def contrast_table(results: pd.DataFrame, confidence: float) -> pd.DataFrame:
     """Every contrast, per checkpoint, pooled and broken out by scheme.
 
     The per-scheme rows are not decoration. The 35M headline survives pooling
@@ -244,13 +274,41 @@ def contrast_table(results: pd.DataFrame, resamples: int, seed: int) -> pd.DataF
 
     Args:
         results: all rungs concatenated, as `load_results` returns.
-        resamples: bootstrap replicates for the clustered intervals.
-        seed: fixes the bootstrap draw, so the artifact is reproducible.
+        confidence: coverage for the assay-clustered intervals.
 
     Returns:
         One row per (checkpoint, contrast, scheme), with an ALL_SCHEMES row
         per contrast and checkpoint carrying the pooled figure.
     """
+    assert not results["spearman"].isna().any(), (
+        f"{int(results['spearman'].isna().sum())} rows carry a NaN spearman; "
+        f"every contrast touching them would be NaN and this would still write "
+        f"a full-looking table and exit 0"
+    )
+
+    # One completeness check covering every contrast, because `paired` cannot do
+    # it alone: when the floor is on the right it has far fewer rows by design,
+    # so a count comparison there cannot tell a missing LoRA arm from the
+    # broadcast. Comparing the two supervised rungs' key sets does, and it is
+    # the same grid every contrast draws from.
+    supervised = {
+        rung: set(
+            map(
+                tuple,
+                seed_averaged(results[results["rung"] == rung])[list(PAIR_KEYS)].values,
+            )
+        )
+        for rung in ("frozen", "lora")
+        if not results[results["rung"] == rung].empty
+    }
+    if len(supervised) == 2:
+        missing = supervised["frozen"] ^ supervised["lora"]
+        assert not missing, (
+            f"{len(missing)} configurations appear on one supervised rung and "
+            f"not the other, e.g. {sorted(missing)[:3]}; the grid is incomplete "
+            f"and every contrast below would silently describe a subset"
+        )
+
     rows = []
     for name, left_rung, right_rung in CONTRASTS:
         pairs = paired(results, left_rung, right_rung)
@@ -268,7 +326,7 @@ def contrast_table(results: pd.DataFrame, resamples: int, seed: int) -> pd.DataF
                         "checkpoint": checkpoint,
                         "contrast": name,
                         "scheme": scheme,
-                        **summarise(subset, resamples, seed),
+                        **summarise(subset, confidence),
                     }
                 )
 
@@ -305,14 +363,13 @@ def main() -> int:
         "dms-analyse-contrasts", log_dir=args.log_dir, params=vars(args)
     ) as run:
         results = load_results(args.results_dir)
-        table = contrast_table(results, BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED)
+        table = contrast_table(results, CONFIDENCE)
 
         destination = args.results_dir / "contrasts.csv"
         table.to_csv(destination, index=False)
         log.info(f"wrote {destination} ({len(table)} rows)")
 
-        run.record("bootstrap_resamples", BOOTSTRAP_RESAMPLES)
-        run.record("bootstrap_seed", BOOTSTRAP_SEED)
+        run.record("interval_confidence", CONFIDENCE)
         run.record("contrast_rows", len(table))
 
         for _, row in table[table["scheme"] == ALL_SCHEMES].iterrows():
@@ -325,7 +382,7 @@ def main() -> int:
             log.info(
                 f"  {row['checkpoint']} {row['contrast']}: "
                 f"{row['mean_delta']:+.4f} (p={p_value}, n={row['n_pairs']}) "
-                f"clustered 95% CI {interval}"
+                f"assay-clustered CI {interval}"
             )
 
     return 0

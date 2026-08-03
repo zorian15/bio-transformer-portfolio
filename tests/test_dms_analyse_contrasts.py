@@ -81,27 +81,13 @@ def ladder_frame(
 
 def table_for(frame: pd.DataFrame) -> pd.DataFrame:
     """`contrast_table` with the script's own bootstrap settings."""
-    return analyse.contrast_table(
-        frame, analyse.BOOTSTRAP_RESAMPLES, analyse.BOOTSTRAP_SEED
-    )
+    return analyse.contrast_table(frame, analyse.CONFIDENCE)
 
 
-def disagreeing_assays() -> pd.DataFrame:
-    """Three assays whose per-assay deltas disagree in sign.
-
-    This is the real 35M situation, and the reason the clustered interval
-    exists. Two assays favour LoRA and one favours frozen, so most individual
-    rows are positive and Wilcoxon sees a confident effect, while the unit the
-    study generalises over, the assay, is split two to one.
-
-    The dissenting assay is deliberately the *smallest* in magnitude. Wilcoxon
-    ranks by absolute value, so making it the largest would have pulled the
-    signed-rank statistic negative and the test would have passed for the wrong
-    reason: it must be a case where the row-level test is genuinely confident
-    and positive, and only the clustering disagrees.
-    """
+def assays_with(deltas: tuple[tuple[str, float], ...]) -> pd.DataFrame:
+    """Both supervised rungs over several assays with the given per-assay deltas."""
     rows = []
-    for assay, delta in (("ASSAY_A", 0.10), ("ASSAY_B", 0.08), ("ASSAY_C", -0.03)):
+    for assay, delta in deltas:
         for scheme in ("fold_random_5", "fold_modulo_5"):
             for readout in ("mean", "at_position"):
                 for n in (32, 512):
@@ -121,6 +107,23 @@ def disagreeing_assays() -> pd.DataFrame:
                                 }
                             )
     return pd.DataFrame(rows)
+
+
+def disagreeing_assays() -> pd.DataFrame:
+    """Three assays whose per-assay deltas disagree in sign.
+
+    This is the real 35M situation, and the reason the clustered interval
+    exists. Two assays favour LoRA and one favours frozen, so most individual
+    rows are positive and Wilcoxon sees a confident effect, while the unit the
+    study generalises over, the assay, is split two to one.
+
+    The dissenting assay is deliberately the *smallest* in magnitude. Wilcoxon
+    ranks by absolute value, so making it the largest would have pulled the
+    signed-rank statistic negative and the test would have passed for the wrong
+    reason: it must be a case where the row-level test is genuinely confident
+    and positive, and only the clustering disagrees.
+    """
+    return assays_with((("ASSAY_A", 0.10), ("ASSAY_B", 0.08), ("ASSAY_C", -0.03)))
 
 
 def lora_minus_frozen(table: pd.DataFrame, checkpoint: str) -> pd.Series:
@@ -280,12 +283,11 @@ def test_a_consistent_effect_still_excludes_zero() -> None:
     A guard that always straddled zero would be useless in the other
     direction, so this pins the case where every assay agrees.
     """
-    frame = disagreeing_assays()
-    # LoRA rows only. Shifting both rungs moves the level and leaves the
-    # delta exactly where it was, which is how the first draft of this test
-    # passed nothing at all.
-    dissenting = (frame["assay"] == "ASSAY_C") & (frame["rung"] == "lora")
-    frame.loc[dissenting, "spearman"] += 0.25
+    # Closely agreeing, not merely all-positive. With three clusters the t
+    # multiplier is 4.303, so three positive-but-scattered assays still produce
+    # an interval covering zero; that is the honest behaviour, and it is why
+    # this fixture has to be tight rather than just favourable.
+    frame = assays_with((("ASSAY_A", 0.10), ("ASSAY_B", 0.11), ("ASSAY_C", 0.12)))
 
     row = lora_minus_frozen(table_for(frame), SMALL)
 
@@ -306,10 +308,76 @@ def test_one_assay_gets_no_interval_rather_than_a_fake_one() -> None:
     assert pd.isna(row["excludes_zero"])
 
 
-def test_the_interval_is_reproducible_for_a_fixed_seed() -> None:
+def test_the_interval_is_deterministic() -> None:
     """This writes a committed artifact, so the numbers cannot drift per run."""
     first = lora_minus_frozen(table_for(disagreeing_assays()), SMALL)
     second = lora_minus_frozen(table_for(disagreeing_assays()), SMALL)
 
     assert first["ci_low"] == second["ci_low"]
     assert first["ci_high"] == second["ci_high"]
+
+
+def test_a_missing_arm_on_the_expensive_rung_is_also_refused() -> None:
+    """The completeness check used to be one-sided, and the wrong way round.
+
+    `len(merged) == len(left)` catches rows missing from the *right* rung and
+    silently accepts rows missing from the left, because a shorter left side
+    matches itself. LoRA is the left side of the headline contrast and the
+    expensive rung, so it is the one whose SLURM tasks actually die. Before this
+    was symmetric, dropping LoRA rows produced a clean table with a quietly
+    reduced n and no error at all.
+    """
+    frame = ladder_frame()
+    missing_lora = frame.drop(
+        frame[(frame["rung"] == "lora") & (frame["n"] == 512)].index
+    )
+
+    with pytest.raises(AssertionError, match="grid is incomplete|one supervised rung"):
+        table_for(missing_lora)
+
+
+def test_a_nan_spearman_is_refused_rather_than_propagated() -> None:
+    """A NaN arm makes every contrast NaN, and the script would still exit 0.
+
+    Which is the worst shape a failure can take here: a complete-looking
+    `contrasts.csv` full of blanks, written over the previous good one.
+    """
+    frame = ladder_frame()
+    frame.loc[0, "spearman"] = float("nan")
+
+    with pytest.raises(AssertionError, match="NaN spearman"):
+        table_for(frame)
+
+
+def test_main_writes_the_artifact_the_writeups_cite(tmp_path: Path) -> None:
+    """Nothing linked the script to `contrasts.csv` before this.
+
+    The statistics were well covered while `main` was not executed at all, so
+    the issue's "the reported contrasts come from a committed script and
+    artifact" was only half true: the script existed, and nothing checked that
+    running it produced the file the docs quote.
+    """
+    results = tmp_path / "results"
+    results.mkdir()
+    frame = ladder_frame()
+    for rung in ("frozen", "lora"):
+        frame[frame["rung"] == rung].to_csv(results / f"{rung}.csv", index=False)
+
+    argv = [
+        "analyse_contrasts.py",
+        "--results-dir",
+        str(results),
+        "--log-dir",
+        str(tmp_path / "logs"),
+    ]
+    original = sys.argv
+    try:
+        sys.argv = argv
+        assert analyse.main() == 0
+    finally:
+        sys.argv = original
+
+    written = pd.read_csv(results / "contrasts.csv")
+    assert not written.empty
+    assert {"contrast", "scheme", "mean_delta", "win_rate", "p_value"} <= set(written)
+    assert (written["contrast"] == "lora_minus_frozen").any()

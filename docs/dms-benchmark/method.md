@@ -153,23 +153,40 @@ two together catches that; reading either alone does not.
 
 **The \(p\)-value is not the last word, and is reported as anti-conservative.**
 Wilcoxon assumes the pairs are independent. Ours are not: 108 configurations
-rest on three assays, and the per-assay differences change sign. So every cell
-also carries a 95% interval from a bootstrap that **resamples whole assays**
-rather than rows, drawing assays with replacement and recomputing the mean:
+rest on **three assays**, and the per-assay differences change sign. A
+\(p\)-value computed over configurations answers "did LoRA win on these three
+proteins", which is not the question a reader has.
+
+So every cell also carries a 95% interval computed at the **assay** level. With
+\(\bar d_k\) the mean difference within assay \(k\), the estimator is the mean of
+the \(K\) assay means and the interval is
 
 \[
-\widehat{\Delta}^{*b} = \operatorname{mean}\Big(\bigcup_{j=1}^{K} d^{(a_j^{*b})}\Big),
-\qquad a_j^{*b} \sim \text{Uniform}\{1, \dots, K\}
+\bar d_{\bullet} \;\pm\; t_{0.975,\,K-1}\,\frac{s\big(\bar d_1, \dots, \bar d_K\big)}{\sqrt{K}}
 \]
 
-for \(K\) assays and \(B\) replicates, with the interval taken as the 2.5th and
-97.5th percentiles of \(\{\widehat{\Delta}^{*b}\}\). With \(K = 3\) that interval
-is coarse, because only ten distinct multisets can be drawn. **That coarseness
-is the finding rather than a defect of the method**: it is what it means to say
-the effective sample size for a scheme-level claim is nearer 3 than 36, and an
-interval that looked smooth would be describing precision this design does not
-have. Where a small \(p\) sits beside an interval straddling zero, the interval
-is the honest reading.
+At \(K = 3\) the multiplier is \(t_{0.975,2} = 4.303\), so these intervals are
+wide. **That width is the finding, not a defect of the method.** Three proteins
+cannot support a narrow interval, and the table reports the three per-assay
+means alongside (`assay_min`, `assay_max`) so a reader can see the spread the
+interval is estimated from rather than take it on trust.
+
+Two things follow, and both are stated plainly in the results:
+
+- Where a small \(p\) sits beside an interval covering zero, **the interval is
+  the honest reading**. The \(p\) describes this cohort; the interval describes
+  what would generalise.
+- No scheme-level contrast at 35M excludes zero once clustering is accounted
+  for, including the one whose \(p\) is \(1.5 \times 10^{-4}\).
+
+**A percentile bootstrap over assays was tried first and is wrong here**, which
+is worth recording because it looks more sophisticated than it is. Resampling
+three clusters with replacement puts probability \(1/27 = 3.7\%\) on drawing the
+same assay three times, which exceeds \(2.5\%\), so the 2.5th and 97.5th
+percentiles collapse exactly onto the smallest and largest assay mean. The
+interval degenerates into the range of three numbers, the replicate count and
+seed stop doing anything, and the result is *narrower* than the \(t\) interval
+above rather than more conservative.
 
 ## Cohort
 
