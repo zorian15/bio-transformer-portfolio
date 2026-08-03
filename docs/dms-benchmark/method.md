@@ -112,6 +112,65 @@ Each arm records the realized number of **distinct training positions** alongsid
 curve may be a site-coverage limit rather than a label-count limit, and only that
 number tells the two apart.
 
+## Reporting contrasts
+
+The numbers a reader should judge the ladder on are not the per-arm Spearman
+values: they are the **differences between rungs**. Those are produced by
+`analyse_contrasts.py` into `results/contrasts.csv`, so every figure quoted in
+the results traces to a committed artifact rather than to an analysis someone
+ran once.
+
+**Pairing.** A contrast is only meaningful between two arms that saw the same
+data, so rung 3 is matched to rung 2 on
+\((\text{checkpoint}, \text{assay}, \text{scheme}, \text{readout}, N)\). The two
+arms in a pair differ in exactly one respect, whether the encoder was allowed to
+adapt, which is the whole design. Seeds are averaged *before* pairing: three
+seeds are three draws of one experiment, and treating them as three observations
+would report \(n=324\) where there are 108 configurations, narrowing every
+interval for free.
+
+**The test is Wilcoxon signed-rank**, not a paired \(t\)-test. Writing
+\(d_i\) for the \(i\)-th paired difference and \(R_i\) for the rank of \(|d_i|\)
+among all \(|d|\), the statistic is
+
+\[
+W^{+} = \sum_{i \,:\, d_i > 0} R_i
+\]
+
+compared against its null distribution. A \(t\)-test would assume the
+differences are approximately normal. They are not: these are differences of
+**bounded** rank correlations, they concentrate near zero, and nothing about the
+design makes normality plausible. Signed-rank assumes only that the difference
+distribution is symmetric about its centre, which is a far weaker claim. It is
+also not an \(F\)-test: an \(F\) statistic answers the omnibus question "does
+this factor explain variance", where the question here is one pre-registered,
+matched comparison.
+
+**A win rate is reported beside every mean**, the fraction of pairs where the
+higher rung won. It is nearly assumption-free, so a mean that disagrees with it
+is being carried by a few arms rather than by a consistent effect. Reading the
+two together catches that; reading either alone does not.
+
+**The \(p\)-value is not the last word, and is reported as anti-conservative.**
+Wilcoxon assumes the pairs are independent. Ours are not: 108 configurations
+rest on three assays, and the per-assay differences change sign. So every cell
+also carries a 95% interval from a bootstrap that **resamples whole assays**
+rather than rows, drawing assays with replacement and recomputing the mean:
+
+\[
+\widehat{\Delta}^{*b} = \operatorname{mean}\Big(\bigcup_{j=1}^{K} d^{(a_j^{*b})}\Big),
+\qquad a_j^{*b} \sim \text{Uniform}\{1, \dots, K\}
+\]
+
+for \(K\) assays and \(B\) replicates, with the interval taken as the 2.5th and
+97.5th percentiles of \(\{\widehat{\Delta}^{*b}\}\). With \(K = 3\) that interval
+is coarse, because only ten distinct multisets can be drawn. **That coarseness
+is the finding rather than a defect of the method**: it is what it means to say
+the effective sample size for a scheme-level claim is nearer 3 than 36, and an
+interval that looked smooth would be describing precision this design does not
+have. Where a small \(p\) sits beside an interval straddling zero, the interval
+is the honest reading.
+
 ## Cohort
 
 Three ProteinGym assays under a filter fixed before any data was downloaded:

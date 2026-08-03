@@ -79,6 +79,50 @@ def ladder_frame(
     return pd.DataFrame(rows)
 
 
+def table_for(frame: pd.DataFrame) -> pd.DataFrame:
+    """`contrast_table` with the script's own bootstrap settings."""
+    return analyse.contrast_table(
+        frame, analyse.BOOTSTRAP_RESAMPLES, analyse.BOOTSTRAP_SEED
+    )
+
+
+def disagreeing_assays() -> pd.DataFrame:
+    """Three assays whose per-assay deltas disagree in sign.
+
+    This is the real 35M situation, and the reason the clustered interval
+    exists. Two assays favour LoRA and one favours frozen, so most individual
+    rows are positive and Wilcoxon sees a confident effect, while the unit the
+    study generalises over, the assay, is split two to one.
+
+    The dissenting assay is deliberately the *smallest* in magnitude. Wilcoxon
+    ranks by absolute value, so making it the largest would have pulled the
+    signed-rank statistic negative and the test would have passed for the wrong
+    reason: it must be a case where the row-level test is genuinely confident
+    and positive, and only the clustering disagrees.
+    """
+    rows = []
+    for assay, delta in (("ASSAY_A", 0.10), ("ASSAY_B", 0.08), ("ASSAY_C", -0.03)):
+        for scheme in ("fold_random_5", "fold_modulo_5"):
+            for readout in ("mean", "at_position"):
+                for n in (32, 512):
+                    for seed in (0, 1, 2):
+                        base = 0.30 + 0.001 * seed
+                        for rung, value in (("frozen", base), ("lora", base + delta)):
+                            rows.append(
+                                {
+                                    "rung": rung,
+                                    "assay": assay,
+                                    "scheme": scheme,
+                                    "readout": readout,
+                                    "n": n,
+                                    "seed": seed,
+                                    "checkpoint": SMALL,
+                                    "spearman": value,
+                                }
+                            )
+    return pd.DataFrame(rows)
+
+
 def lora_minus_frozen(table: pd.DataFrame, checkpoint: str) -> pd.Series:
     """The pooled row for one size, which is what a headline quotes."""
     match = table[
@@ -97,7 +141,7 @@ def test_seeds_are_averaged_before_pairing_not_counted_as_observations() -> None
     which narrows every interval and lowers every p-value for free. Nothing
     about the resulting table looks wrong.
     """
-    table = analyse.contrast_table(ladder_frame())
+    table = table_for(ladder_frame())
     row = lora_minus_frozen(table, SMALL)
 
     # 2 schemes x 2 readouts x 2 N, seeds collapsed.
@@ -119,7 +163,7 @@ def test_the_two_sizes_are_never_pooled_into_one_contrast() -> None:
         ],
         ignore_index=True,
     )
-    table = analyse.contrast_table(frame)
+    table = table_for(frame)
 
     assert lora_minus_frozen(table, SMALL)["mean_delta"] == pytest.approx(0.02)
     assert lora_minus_frozen(table, LARGE)["mean_delta"] == pytest.approx(0.20)
@@ -135,7 +179,7 @@ def test_each_size_gets_its_own_per_scheme_breakdown() -> None:
     positions between folds, so the per-scheme rows are the finding rather than
     supporting detail.
     """
-    table = analyse.contrast_table(ladder_frame(checkpoints=(SMALL, LARGE)))
+    table = table_for(ladder_frame(checkpoints=(SMALL, LARGE)))
     schemes = set(
         table[
             (table["contrast"] == "lora_minus_frozen") & (table["checkpoint"] == LARGE)
@@ -158,7 +202,7 @@ def test_an_incomplete_grid_is_refused_rather_than_averaged() -> None:
     )
 
     with pytest.raises(AssertionError, match="grid is incomplete"):
-        analyse.contrast_table(incomplete)
+        table_for(incomplete)
 
 
 def test_a_degenerate_contrast_reports_no_p_value_rather_than_inventing_one() -> None:
@@ -167,7 +211,7 @@ def test_a_degenerate_contrast_reports_no_p_value_rather_than_inventing_one() ->
     Reporting 1.0, or letting scipy's warning path pick something, would put a
     number in the table that no test produced.
     """
-    table = analyse.contrast_table(ladder_frame(lora_bonus=0.0))
+    table = table_for(ladder_frame(lora_bonus=0.0))
     row = lora_minus_frozen(table, SMALL)
 
     assert row["mean_delta"] == pytest.approx(0.0)
@@ -197,7 +241,7 @@ def test_the_zero_shot_floor_pairs_without_a_readout_or_n() -> None:
             for scheme in ("fold_random_5", "fold_modulo_5")
         ]
     )
-    table = analyse.contrast_table(pd.concat([frame, floor], ignore_index=True))
+    table = table_for(pd.concat([frame, floor], ignore_index=True))
 
     row = table[
         (table["contrast"] == "frozen_minus_zero_shot")
@@ -207,3 +251,65 @@ def test_the_zero_shot_floor_pairs_without_a_readout_or_n() -> None:
     assert row["n_pairs"] == 8, "the floor did not broadcast across the arms"
     # frozen averages 0.301 over seeds, against a 0.20 floor.
     assert row["mean_delta"] == pytest.approx(0.101)
+
+
+def test_the_interval_resamples_assays_not_rows() -> None:
+    """The whole point: Wilcoxon is confident where the design is not.
+
+    With two assays favouring LoRA and one favouring frozen, most individual
+    rows are positive, so the signed-rank test on 72 pairs reports a small p.
+    But the quantity that would have to generalise is the assay, and those are
+    split two to one, so an interval built by resampling assays has to straddle
+    zero. A bootstrap that resampled rows instead would inherit the same false
+    confidence and agree with Wilcoxon, which is exactly the mistake.
+    """
+    row = lora_minus_frozen(table_for(disagreeing_assays()), SMALL)
+
+    assert row["n_assays"] == 3
+    assert row["p_value"] < 0.05, "the row-level test should look confident here"
+    assert row["ci_low"] < 0.0 < row["ci_high"], (
+        "the assay-clustered interval excludes zero, so resampling is not "
+        "happening at the assay level"
+    )
+    assert not row["excludes_zero"]
+
+
+def test_a_consistent_effect_still_excludes_zero() -> None:
+    """The interval must not simply be wide for everything.
+
+    A guard that always straddled zero would be useless in the other
+    direction, so this pins the case where every assay agrees.
+    """
+    frame = disagreeing_assays()
+    # LoRA rows only. Shifting both rungs moves the level and leaves the
+    # delta exactly where it was, which is how the first draft of this test
+    # passed nothing at all.
+    dissenting = (frame["assay"] == "ASSAY_C") & (frame["rung"] == "lora")
+    frame.loc[dissenting, "spearman"] += 0.25
+
+    row = lora_minus_frozen(table_for(frame), SMALL)
+
+    assert row["ci_low"] > 0.0
+    assert row["excludes_zero"]
+
+
+def test_one_assay_gets_no_interval_rather_than_a_fake_one() -> None:
+    """Resampling a single cluster returns its own mean every time.
+
+    That would print a zero-width interval, which reads as perfect precision
+    rather than as "this cannot be estimated from one assay".
+    """
+    row = lora_minus_frozen(table_for(ladder_frame()), SMALL)
+
+    assert row["n_assays"] == 1
+    assert pd.isna(row["ci_low"]) and pd.isna(row["ci_high"])
+    assert pd.isna(row["excludes_zero"])
+
+
+def test_the_interval_is_reproducible_for_a_fixed_seed() -> None:
+    """This writes a committed artifact, so the numbers cannot drift per run."""
+    first = lora_minus_frozen(table_for(disagreeing_assays()), SMALL)
+    second = lora_minus_frozen(table_for(disagreeing_assays()), SMALL)
+
+    assert first["ci_low"] == second["ci_low"]
+    assert first["ci_high"] == second["ci_high"]

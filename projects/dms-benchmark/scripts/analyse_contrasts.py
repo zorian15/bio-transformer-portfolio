@@ -64,6 +64,14 @@ CONTRASTS = (
 # name, and chosen so it cannot collide with one.
 ALL_SCHEMES = "all"
 
+# Bootstrap settings for the assay-clustered interval. Ten thousand is well past
+# the point where percentile endpoints stop moving; the limit on precision here
+# is three clusters, not the replicate count. The seed is fixed because this
+# writes a committed artifact and a table whose intervals moved between runs
+# would be untraceable.
+BOOTSTRAP_RESAMPLES = 10_000
+BOOTSTRAP_SEED = 0
+
 
 def seed_averaged(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse seeds, so one row is one configuration rather than one run.
@@ -134,15 +142,64 @@ def paired(results: pd.DataFrame, left_rung: str, right_rung: str) -> pd.DataFra
     return merged
 
 
-def summarise(deltas: pd.Series) -> dict[str, Any]:
-    """Mean, Wilcoxon p, win rate and n for one set of paired differences.
+def clustered_interval(
+    subset: pd.DataFrame, resamples: int, seed: int
+) -> tuple[float | None, float | None]:
+    """Percentile bootstrap interval, resampling whole assays rather than rows.
 
-    Wilcoxon signed-rank rather than a t-test: these are differences of bounded
-    rank correlations, not normal at this sample size, and the signed-rank test
-    assumes only symmetry.
+    This is the number that qualifies the headline, and the reason it exists is
+    that the Wilcoxon p beside it is anti-conservative. That test assumes the
+    pairs are independent; ours are not. The 108 seed-averaged configurations
+    rest on three assays, the per-assay deltas change sign, and a scheme-level
+    claim therefore has an effective n nearer 3 than 36. Resampling rows would
+    inherit exactly that false confidence, so the resampling unit is the assay:
+    draw assays with replacement, keep every row belonging to a drawn assay, and
+    recompute the mean.
+
+    With three assays the interval is coarse by construction, since there are
+    only ten distinct multisets to draw. That coarseness is the finding rather
+    than a defect of the method: it is what "effective n is nearer 3" means, and
+    an interval that looked smooth would be describing a precision the design
+    does not have.
 
     Args:
-        deltas: paired differences, one per configuration.
+        subset: paired rows carrying `delta` and the `assay` they came from.
+        resamples: bootstrap replicates to draw.
+        seed: fixes the draw, so a committed artifact is reproducible.
+
+    Returns:
+        The 2.5th and 97.5th percentiles of the resampled means, or
+        (None, None) when there is only one cluster and resampling it would
+        return the same mean every time rather than an interval.
+    """
+    clusters = [group["delta"].to_numpy() for _, group in subset.groupby("assay")]
+    if len(clusters) < 2:
+        return (None, None)
+
+    rng = np.random.default_rng(seed)
+    drawn = rng.integers(0, len(clusters), size=(resamples, len(clusters)))
+    means = np.array(
+        [np.concatenate([clusters[index] for index in row]).mean() for row in drawn]
+    )
+    return (float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5)))
+
+
+def summarise(subset: pd.DataFrame, resamples: int, seed: int) -> dict[str, Any]:
+    """Every reported figure for one set of paired differences.
+
+    Wilcoxon signed-rank rather than a paired t-test: these are differences of
+    bounded rank correlations, they pile up near zero, and there is no reason to
+    expect normality at this sample size. Signed-rank assumes only that the
+    difference distribution is symmetric about its centre.
+
+    The win rate is reported beside the mean deliberately. It is nearly
+    assumption-free, so a mean that disagrees with it is being carried by a few
+    arms rather than by a consistent effect.
+
+    Args:
+        subset: paired rows carrying `delta` and `assay`.
+        resamples: bootstrap replicates for the clustered interval.
+        seed: fixes the bootstrap draw.
 
     Returns:
         The summary fields. `p_value` is None when the test cannot run, which
@@ -151,21 +208,33 @@ def summarise(deltas: pd.Series) -> dict[str, Any]:
     """
     from scipy import stats
 
-    values = np.asarray(deltas, dtype=float)
+    values = subset["delta"].to_numpy(dtype=float)
     p_value: float | None = None
     if len(values) >= 2 and np.any(values != 0.0):
         p_value = float(stats.wilcoxon(values).pvalue)
 
+    low, high = clustered_interval(subset, resamples, seed)
     return {
         "n_pairs": len(values),
+        "n_assays": int(subset["assay"].nunique()),
         "mean_delta": float(np.mean(values)),
         "median_delta": float(np.median(values)),
         "win_rate": float(np.mean(values > 0.0)),
         "p_value": p_value,
+        "ci_low": low,
+        "ci_high": high,
+        # The honest headline. A Wilcoxon p below 0.05 whose clustered interval
+        # straddles zero is a claim the design cannot support, and that
+        # combination is exactly what happened on two of three schemes at 35M.
+        # Both bounds tested rather than just `low`: they are always None
+        # together, but stating that is what lets a type checker see it.
+        "excludes_zero": (
+            None if low is None or high is None else bool(low > 0.0 or high < 0.0)
+        ),
     }
 
 
-def contrast_table(results: pd.DataFrame) -> pd.DataFrame:
+def contrast_table(results: pd.DataFrame, resamples: int, seed: int) -> pd.DataFrame:
     """Every contrast, per checkpoint, pooled and broken out by scheme.
 
     The per-scheme rows are not decoration. The 35M headline survives pooling
@@ -175,6 +244,8 @@ def contrast_table(results: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         results: all rungs concatenated, as `load_results` returns.
+        resamples: bootstrap replicates for the clustered intervals.
+        seed: fixes the bootstrap draw, so the artifact is reproducible.
 
     Returns:
         One row per (checkpoint, contrast, scheme), with an ALL_SCHEMES row
@@ -197,7 +268,7 @@ def contrast_table(results: pd.DataFrame) -> pd.DataFrame:
                         "checkpoint": checkpoint,
                         "contrast": name,
                         "scheme": scheme,
-                        **summarise(subset["delta"]),
+                        **summarise(subset, resamples, seed),
                     }
                 )
 
@@ -230,19 +301,31 @@ def main() -> int:
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
     args = parser.parse_args()
 
-    with run_context("dms-analyse-contrasts", log_dir=args.log_dir, params=vars(args)):
+    with run_context(
+        "dms-analyse-contrasts", log_dir=args.log_dir, params=vars(args)
+    ) as run:
         results = load_results(args.results_dir)
-        table = contrast_table(results)
+        table = contrast_table(results, BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED)
 
         destination = args.results_dir / "contrasts.csv"
         table.to_csv(destination, index=False)
         log.info(f"wrote {destination} ({len(table)} rows)")
 
+        run.record("bootstrap_resamples", BOOTSTRAP_RESAMPLES)
+        run.record("bootstrap_seed", BOOTSTRAP_SEED)
+        run.record("contrast_rows", len(table))
+
         for _, row in table[table["scheme"] == ALL_SCHEMES].iterrows():
             p_value = "n/a" if pd.isna(row["p_value"]) else f"{row['p_value']:.2g}"
+            interval = (
+                "n/a"
+                if pd.isna(row["ci_low"])
+                else f"[{row['ci_low']:+.3f}, {row['ci_high']:+.3f}]"
+            )
             log.info(
                 f"  {row['checkpoint']} {row['contrast']}: "
-                f"{row['mean_delta']:+.4f} (p={p_value}, n={row['n_pairs']})"
+                f"{row['mean_delta']:+.4f} (p={p_value}, n={row['n_pairs']}) "
+                f"clustered 95% CI {interval}"
             )
 
     return 0
