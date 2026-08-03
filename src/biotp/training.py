@@ -15,7 +15,7 @@ only in whether the encoder was allowed to adapt.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Generic, Literal, TypeVar
 
@@ -65,6 +65,34 @@ def _initial_history(mode: FinetuneMode, n_train: int, n_val: int) -> dict[str, 
         "n_val": n_val,
         "mode": mode,
     }
+
+
+def _build_optimizer(parameters: Iterable[Any], lr: float) -> Any:
+    """The optimiser both supervised rungs train through.
+
+    One constructor rather than one per trainer, for the reason
+    `_BestEpochTracker` is one class: the ladder's claim is that consecutive
+    rungs differ in exactly one respect, and each trainer building its own
+    `Adam` made that a coincidence maintained by hand. A `weight_decay` added
+    to either trainer alone changed the measured rung-2-to-rung-3 delta while
+    every test stayed green, because nothing compared the two optimisers.
+
+    So a hyperparameter added here reaches both rungs or neither, and the
+    property is structural rather than remembered. Issue #37, following #33.
+
+    Args:
+        parameters: what to optimise. The one thing the rungs legitimately
+            differ on: the frozen rung hands over a head, the LoRA rung hands
+            over the adapters and the head together.
+        lr: Adam learning rate. No default, since both rungs must set it from
+            one place for the delta to mean anything.
+
+    Returns:
+        A `torch.optim.Adam` over `parameters`.
+    """
+    import torch
+
+    return torch.optim.Adam(parameters, lr=lr)
 
 
 # What a snapshot holds. Generic rather than Any so the pair of callbacks is
@@ -275,7 +303,7 @@ def train(
     x_val, y_val = _as_tensors(val_data, task, device)
 
     loss_fn = nn.CrossEntropyLoss() if task == "classification" else nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = _build_optimizer(model.parameters(), lr)
 
     history = _initial_history(mode, len(x_train), len(x_val))
     # Recorded because it is now a caller's choice rather than a constant, and it
@@ -684,10 +712,7 @@ def train_lora(
     )
 
     loss_fn = nn.MSELoss()
-    optimizer = torch.optim.Adam(
-        [*trainable, *head.parameters()],
-        lr=lr,
-    )
+    optimizer = _build_optimizer([*trainable, *head.parameters()], lr)
 
     history = _initial_history(
         "lora", len(train_data.sequences), len(val_data.sequences)

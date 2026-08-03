@@ -552,3 +552,21 @@ def test_the_tracker_does_not_let_a_caller_choose_its_patience() -> None:
         "the tracker accepts a patience argument, so two call sites can be given "
         "different stopping rules while appearing to share an implementation"
     )
+
+
+def test_the_patience_matches_the_committed_results() -> None:
+    """Provenance, the same argument that pins Project 1's batch size at 256.
+
+    Every committed supervised result was produced at patience 10, and both
+    experiment logs say so in the setup line a reader would cite: Project 1's
+    arms and the DMS `frozen.csv` grid are both recorded as "max 200 epochs
+    with patience 10 and best-val-epoch restore".
+
+    Nothing else notices if this number changes. It is read only by
+    `_BestEpochTracker`, so it applies to both rungs symmetrically and the
+    ladder's delta stays attributable either way, which is exactly why the
+    tests around it stay green: `test_tracker_stops_exactly_at_the_patience_
+    boundary` reads the constant rather than pinning it, so it follows the
+    value wherever it goes. What moves is `frozen.csv`, silently. Issue #37.
+    """
+    assert training.EARLY_STOPPING_PATIENCE == 10

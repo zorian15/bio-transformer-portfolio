@@ -745,6 +745,74 @@ def test_both_rungs_report_batch_size_in_their_history() -> None:
     assert frozen_history["batch_size"] == 4
 
 
+def test_both_supervised_rungs_build_the_same_optimiser(monkeypatch) -> None:
+    """The optimiser each rung actually constructs, not the settings handed to it.
+
+    `test_both_supervised_rungs_receive_identical_optimiser_kwargs` compares what
+    the call sites *pass*. Below that, each trainer used to build its own
+    `Adam`, so `weight_decay=0.01` added to either one alone left all 446 tests
+    green: the rungs agreed by luck, which is the coincidence-maintained-by-hand
+    that issue #33 rejected, one layer down. Issue #37.
+
+    Two assertions, because the shared constructor can fail in two ways. The
+    call counts catch a trainer that goes back to building its own optimiser
+    directly, which no comparison of results could see. The `defaults`
+    comparison catches a genuine divergence if the rungs ever build through
+    separate paths again; it is the whole dict rather than a list of settings
+    someone remembered, for the same reason `RUNG_SPECIFIC_KWARGS` is a closed
+    set of exceptions rather than an open list of requirements.
+
+    Behavioural rather than source-inspecting, per `capture_optimiser`: a test
+    that grepped for `torch.optim.Adam` would fail a legitimate refactor and
+    pass a lookalike.
+    """
+    # One learning rate for both, so `defaults["lr"]` is inside the comparison
+    # rather than excluded from it. Distinct from every fixture default here
+    # (`run` uses 1e-2), so a rung ignoring the argument is visible.
+    shared_lr = 3e-4
+    original = training._build_optimizer
+    defaults_seen: list[dict] = []
+
+    def spy(parameters, lr):  # type: ignore[no-untyped-def]
+        optimizer = original(parameters, lr)
+        defaults_seen.append(dict(optimizer.defaults))
+        return optimizer
+
+    monkeypatch.setattr(training, "_build_optimizer", spy)
+
+    run(max_epochs=1, lr=shared_lr)
+    assert len(defaults_seen) == 1, (
+        f"`train_lora` built {len(defaults_seen)} optimisers through the shared "
+        "constructor, expected exactly 1; a rung constructing its own can be "
+        "given a hyperparameter the other rung never sees"
+    )
+
+    head = training.build_head(4, 1, "regression")
+    features = np.zeros((8, 4), dtype=np.float32)
+    targets = np.arange(8, dtype=np.float32)
+    training.train(
+        head,
+        (features, targets),
+        (features, targets),
+        mode="linear_probe",
+        max_epochs=1,
+        lr=shared_lr,
+        batch_size=4,
+    )
+    assert len(defaults_seen) == 2, (
+        f"`train` built {len(defaults_seen) - 1} optimisers through the shared "
+        "constructor, expected exactly 1; see above"
+    )
+
+    lora_defaults, frozen_defaults = defaults_seen
+    assert frozen_defaults == lora_defaults, (
+        "the two supervised rungs train through differently-configured "
+        "optimisers, so the ladder's rung-2-to-rung-3 delta mixes adaptation "
+        "with an optimiser difference; a setting wanted on both belongs in "
+        "`_build_optimizer`, which is the one place that reaches both rungs"
+    )
+
+
 def lora_batch_sizes_seen(batch_size: int) -> list[int]:
     """Rows in each training forward pass of `train_lora`, from the head itself."""
     encoder = tiny_bundle()
