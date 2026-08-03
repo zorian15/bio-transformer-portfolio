@@ -745,6 +745,97 @@ def test_both_rungs_report_batch_size_in_their_history() -> None:
     assert frozen_history["batch_size"] == 4
 
 
+def test_both_supervised_rungs_build_the_same_optimiser(monkeypatch) -> None:
+    """The optimiser each rung actually constructs, not the settings handed to it.
+
+    `test_both_supervised_rungs_receive_identical_optimiser_kwargs` compares what
+    the call sites *pass*. Below that, each trainer used to build its own
+    `Adam`, so `weight_decay=0.01` added to either one alone left all 446 tests
+    green: the rungs agreed by luck, which is the coincidence-maintained-by-hand
+    that issue #33 rejected, one layer down. Issue #37.
+
+    Two assertions, because the shared constructor can fail in two ways. The
+    call counts catch a trainer that goes back to building its own optimiser
+    directly, which no comparison of settings could see. The settings
+    comparison catches a divergence in what the two rungs actually step with;
+    it is the whole dict rather than a list of settings someone remembered, for
+    the same reason `RUNG_SPECIFIC_KWARGS` is a closed set of exceptions rather
+    than an open list of requirements.
+
+    **Read from `param_groups`, deliberately, not from `defaults`.** This test
+    compared `optimizer.defaults` first, and that version passed against a
+    `weight_decay` reaching the LoRA rung alone:
+
+        _build_optimizer([{"params": [...], "weight_decay": 0.01}], lr)
+
+    `defaults` holds what the constructor was handed, so a per-group override
+    never appears in it, while `param_groups` holds the merged values Adam
+    steps with. `parameters` is the one argument the rungs may legitimately
+    differ on, which makes it the one place a hyperparameter can still ride in
+    disguised as a parameter list: exactly the bug this test exists to catch,
+    one argument over. Found by mutation testing on this PR.
+
+    Behavioural rather than source-inspecting, per `capture_optimiser`: a test
+    that grepped for `torch.optim.Adam` would fail a legitimate refactor and
+    pass a lookalike.
+    """
+    # One learning rate for both, so `lr` is inside the comparison rather than
+    # excluded from it. Distinct from every fixture default here (`run` uses
+    # 1e-2), so a rung ignoring the argument is visible.
+    shared_lr = 3e-4
+    original = training._build_optimizer
+    settings_seen: list[list[dict]] = []
+
+    def spy(parameters, lr):  # type: ignore[no-untyped-def]
+        optimizer = original(parameters, lr)
+        # Every group, not just the first: a second group is how a rung would
+        # carry a setting the other one does not. `params` is the weights
+        # themselves and is what the rungs are supposed to differ on.
+        settings_seen.append(
+            [
+                {key: value for key, value in group.items() if key != "params"}
+                for group in optimizer.param_groups
+            ]
+        )
+        return optimizer
+
+    monkeypatch.setattr(training, "_build_optimizer", spy)
+
+    run(max_epochs=1, lr=shared_lr)
+    assert len(settings_seen) == 1, (
+        f"`train_lora` built {len(settings_seen)} optimisers through the shared "
+        "constructor, expected exactly 1; a rung constructing its own can be "
+        "given a hyperparameter the other rung never sees"
+    )
+
+    head = training.build_head(4, 1, "regression")
+    features = np.zeros((8, 4), dtype=np.float32)
+    targets = np.arange(8, dtype=np.float32)
+    training.train(
+        head,
+        (features, targets),
+        (features, targets),
+        mode="linear_probe",
+        max_epochs=1,
+        lr=shared_lr,
+        batch_size=4,
+    )
+    assert len(settings_seen) == 2, (
+        f"`train` built {len(settings_seen) - 1} optimisers through the shared "
+        "constructor, expected exactly 1; see above"
+    )
+
+    lora_settings, frozen_settings = settings_seen
+    assert frozen_settings == lora_settings, (
+        "the two supervised rungs train through differently-configured "
+        "optimisers, so the ladder's rung-2-to-rung-3 delta mixes adaptation "
+        "with an optimiser difference; a setting wanted on both belongs in "
+        "`_build_optimizer`, which is the one place that reaches both rungs. "
+        "A differing group count means one rung split its parameters into "
+        "groups to give some of them their own hyperparameters"
+    )
+
+
 def lora_batch_sizes_seen(batch_size: int) -> list[int]:
     """Rows in each training forward pass of `train_lora`, from the head itself."""
     encoder = tiny_bundle()

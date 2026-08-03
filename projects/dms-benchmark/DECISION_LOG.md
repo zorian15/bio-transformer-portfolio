@@ -15,6 +15,30 @@ Chronological record of experiments and the decisions they drove. Newest entries
 
 <!-- newest entries below this line -->
 
+### 2026-08-02: the two rungs now build one optimiser, so a setting cannot reach only one of them
+
+- **Question / hypothesis:** the entry below closed #33 by making both supervised rungs *pass* identical optimiser settings, guarded by a whole-dict comparison of the training kwargs. Mutation testing on that PR asked the question those guards do not cover: what if the settings agree at the call site and diverge below it? Issue #37.
+- **Setup:** no run, and no change to any hyperparameter. `train` and `train_lora` each constructed their own `torch.optim.Adam`; both now build through one private `_build_optimizer(parameters, lr)`. The rungs still differ in what they hand it, which is the one difference the ladder exists to measure: a head, against the adapters and the head together.
+- **Result:** the gap was real, and closing it is worth more than the diff suggests.
+
+  `weight_decay=0.01` added to `train` alone left all 446 tests green. It now fails `test_both_supervised_rungs_build_the_same_optimiser` and nothing else. Added instead to the shared constructor, where it reaches both rungs, the suite stays green. That discrimination is the point rather than a detail: **#35 is likely to add exactly this parameter**, and a test that merely forbade `weight_decay` would block the fix instead of guarding it.
+
+  The test asserts two things, because the property can fail two ways. It compares the hyperparameters each rung's optimiser actually steps with, and it asserts each rung built exactly one optimiser *through the shared constructor*. The second half is what catches a trainer quietly going back to its own `Adam`; no comparison of settings, at any level, can see that.
+
+  **The first version of that test had the same bug it was written to catch, one argument over.** It compared `optimizer.defaults`, and review found that this passes against
+
+  ```python
+  _build_optimizer([{"params": [...], "weight_decay": 0.01}], lr)
+  ```
+
+  because `defaults` holds only what the constructor was handed, while per-group overrides live in `param_groups`. `parameters` is the one argument the two rungs may legitimately differ on, which makes it precisely the place a hyperparameter can still ride in disguised as a parameter list, and it is the form #35 is most likely to take: no-decay-on-biases and decay-adapters-only are both written as param groups. The test now compares the merged per-group settings, which kills that mutant and the two-group variant, and still lets a `weight_decay` added inside `_build_optimizer` through. Worth recording because the lesson generalises: a guard written against one layer tends to inherit the assumption that made the layer below it invisible.
+
+  `EARLY_STOPPING_PATIENCE = 10 → 3` also survived all 446 tests. That one does not reopen #33: `_BestEpochTracker` reads the constant once and applies it to both rungs symmetrically, so the delta stays attributable either way. What it does is move `frozen.csv` silently, and both this log and Project 1's cite "max 200 epochs with patience 10" as the setup behind committed numbers. Now pinned, on the same provenance grounds that pin `SUPERVISED_BATCH_SIZE == 8` and Project 1's `BATCH_SIZE == 256`. `MAX_EPOCHS = 200 → 50` survived too, in both projects, so the other half of that quoted sentence is pinned as well: eleven rung-2 runs reach the cap while still improving, so it is load-bearing rather than decorative.
+
+  **No number moved, and that was checked rather than argued.** Adam receives the same arguments in the same order as before, so this should be a no-op, but "should be" is what a reproduction run is for. Project 1 reproduces bit-for-bit on both cohorts, all four artifacts each. The full 324-configuration rung-2 grid re-ran in 748s and reproduces `frozen.csv` byte-identically (`sha1 417ff0a2`), which is the check that would have caught a parameter-ordering change inside Adam.
+
+- **Decision / next step:** the ladder's optimiser agreement is now structural rather than tested: there is one constructor, so there is nothing to keep in sync. #35 is next and should add its regularisation inside `_build_optimizer`, which is now the only place that reaches both rungs at once. This entry records no new science; it records that the guard protecting the science is one layer deeper than it was.
+
 ### 2026-08-02: matching the optimiser removed a quarter of the delta, and moved the problem
 
 - **Question / hypothesis:** the previous entry found rungs 2 and 3 did not differ in exactly one thing: patience is counted in epochs, and rung 2 batched at 256 with lr 1e-3 against rung 3's 8 and 1e-4, so an epoch was 5x to 25x more gradient updates on rung 3. Does the rung-2-to-rung-3 delta survive equalising that? Issue #33.

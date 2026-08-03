@@ -1015,7 +1015,7 @@ def test_rung_two_trains_with_the_shared_optimiser(monkeypatch) -> None:
     stand would pass against a rung wired to any other module constant that
     happens to hold the same number, and several here are also 8. The literal
     values are pinned separately by
-    `test_the_shared_batch_size_matches_the_committed_results`.
+    `test_the_shared_optimiser_settings_match_the_committed_results`.
     """
     monkeypatch.setattr(run_arms, "SUPERVISED_BATCH_SIZE", 7)
     monkeypatch.setattr(run_arms, "SUPERVISED_LEARNING_RATE", 5e-5)
@@ -1118,7 +1118,7 @@ def test_zero_shot_records_no_optimiser() -> None:
     assert "supervised" not in run_arms.configuration_records("zero_shot")
 
 
-def test_the_shared_batch_size_matches_the_committed_results() -> None:
+def test_the_shared_optimiser_settings_match_the_committed_results() -> None:
     """Provenance, the same argument that pins Project 1 at 256.
 
     `frozen.csv` was regenerated at this batch size. The rung tests either side
@@ -1127,6 +1127,13 @@ def test_the_shared_batch_size_matches_the_committed_results() -> None:
     """
     assert run_arms.SUPERVISED_BATCH_SIZE == 8
     assert run_arms.SUPERVISED_LEARNING_RATE == 1e-4
+    # The other half of "max 200 epochs with patience 10", which is how the
+    # experiment log states the setup behind `frozen.csv`. Patience is pinned
+    # beside `EARLY_STOPPING_PATIENCE` in `test_training.py`; pinning one and
+    # not the other leaves the quoted sentence half-guarded. Eleven rung-2 runs
+    # reach this cap while still improving, so lowering it truncates them
+    # further and lifting it changes their scores, in both cases silently.
+    assert run_arms.MAX_EPOCHS == 200
 
 
 def test_scoring_batch_size_is_not_the_training_one(monkeypatch) -> None:
