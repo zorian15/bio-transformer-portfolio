@@ -143,22 +143,80 @@ def test_subsample_refuses_to_exceed_the_pool() -> None:
         run_arms.subsample(np.arange(10), 32, "ASSAY_A", "fold_modulo_5", 0)
 
 
-def test_the_ladder_shares_one_checkpoint() -> None:
+def test_both_supervised_rungs_run_at_the_same_sizes() -> None:
     """The invariant the rung-2-to-rung-3 delta depends on.
 
-    Rung 1 additionally reports a second size, which is a separate arm rather
-    than a substitution inside the ladder.
+    The ladder now runs once per size rather than at a single one, so the
+    invariant is no longer "one checkpoint" but "the same checkpoints on both
+    supervised rungs". A size on rung 3 with no rung 2 counterpart would leave
+    a fine-tuned number with nothing at its own scale to be a delta against,
+    and the natural way to introduce that is to make the 650M arm conditional
+    on something only one rung consults.
     """
-    assert run_arms.LADDER_CHECKPOINT in run_arms.ZERO_SHOT_CHECKPOINTS
-    assert len(run_arms.ZERO_SHOT_CHECKPOINTS) == 2
+    assays = ("A", "B", "C")
+    frozen = {config.checkpoint for config in run_arms.grid("frozen", assays)}
+    lora = {config.checkpoint for config in run_arms.grid("lora", assays)}
+
+    assert frozen == lora == set(run_arms.SUPERVISED_CHECKPOINTS)
+    # And rung 1 covers every supervised size, so each supervised result has a
+    # zero-shot floor at its own scale rather than one borrowed from 35M.
+    assert set(run_arms.SUPERVISED_CHECKPOINTS) <= set(run_arms.ZERO_SHOT_CHECKPOINTS)
+
+
+def test_the_ladder_runs_at_both_planned_sizes() -> None:
+    """Provenance, and the point of the 650M arm stated as an assertion.
+
+    The arm exists to answer "your encoder was too small for adaptation to
+    show up". An arm that quietly ran at some third size would answer nothing
+    while every count in the tests above stayed correct.
+    """
+    assert run_arms.SUPERVISED_CHECKPOINTS == (
+        "esm2_t33_650M_UR50D",
+        "esm2_t12_35M_UR50D",
+    )
+
+
+def test_the_ridge_reference_size_does_not_follow_the_run_order() -> None:
+    """`LADDER_CHECKPOINT` is spelled out, not `SUPERVISED_CHECKPOINTS[0]`.
+
+    The tuple's order is a scheduling choice: it decides which half of the
+    array gets the low task indices. `frozen_reference.py` reads
+    `LADDER_CHECKPOINT` for the ridge floor, so indexing it off that tuple
+    would mean reordering the array silently moved the floor to a different
+    encoder, and a floor at the wrong size is not a floor.
+    """
+    assert run_arms.LADDER_CHECKPOINT == "esm2_t12_35M_UR50D"
+    assert run_arms.LADDER_CHECKPOINT != run_arms.SUPERVISED_CHECKPOINTS[0]
 
 
 def test_the_grid_covers_the_pre_registered_axes() -> None:
     configs = list(run_arms.grid("lora", ("A", "B", "C")))
-    assert len(configs) == 3 * 3 * 3 * 4 * 3, "assays x schemes x readouts x N x seeds"
-    assert {c.checkpoint for c in configs} == {run_arms.LADDER_CHECKPOINT}
+    assert (
+        len(configs) == 2 * 3 * 3 * 3 * 4 * 3
+    ), "checkpoints x assays x schemes x readouts x N x seeds"
+    assert {c.checkpoint for c in configs} == set(run_arms.SUPERVISED_CHECKPOINTS)
     assert {c.n for c in configs} == set(run_arms.TRAINING_SIZES)
     assert {c.seed for c in configs} == set(run_arms.SEEDS)
+
+
+def test_the_expensive_checkpoint_comes_first_in_the_grid() -> None:
+    """Task order is not cosmetic: it is what makes a truncated array useful.
+
+    Checkpoint is the outermost axis and SLURM dispatches an array in ascending
+    index order, so this mapping is the only lever on which half runs first.
+    650M takes tasks 0-323 because it is the deliverable; the 35M half is a
+    reproduction check of an already-published result. An array cancelled,
+    preempted or cut short by the end of an allocation then leaves the result
+    we came for rather than a second copy of the one we had.
+
+    Asserted rather than left to the constant's order, because "which half runs
+    first" is invisible in a diff that merely swaps two strings in a tuple.
+    """
+    configs = list(run_arms.grid("lora", ("A", "B", "C")))
+    half = len(configs) // 2
+
+    assert {c.checkpoint for c in configs[:half]} == {"esm2_t33_650M_UR50D"}
+    assert {c.checkpoint for c in configs[half:]} == {"esm2_t12_35M_UR50D"}
 
 
 def test_validation_is_capped_and_stable() -> None:
@@ -414,7 +472,8 @@ def test_the_documented_lora_array_bound_is_the_real_one() -> None:
     )
     size = run_arms.grid_size("lora", real_assays)
 
-    assert size == 324
+    # 648, not 324: the grid runs the ladder at both sizes since issue #34.
+    assert size == 324 * len(run_arms.SUPERVISED_CHECKPOINTS)
     sbatch = (
         Path(__file__).resolve().parents[1] / "slurm" / "submit-finetune.sh"
     ).read_text()
@@ -710,15 +769,26 @@ def test_a_supervised_rung_without_a_readout_or_n_is_rejected(
                 "fold_modulo_5",
                 "--seed",
                 "0",
+                # Given so this reaches the assertion it is about; the
+                # checkpoint guard runs first and would otherwise mask it.
+                "--checkpoint",
+                run_arms.LADDER_CHECKPOINT,
             ],
         )
 
 
+@pytest.mark.parametrize("task_id", [0, 108])
 def test_explicit_axes_select_the_same_configuration_as_the_task_id(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, task_id: int
 ) -> None:
-    """The two ways of naming one configuration must not disagree."""
-    config = run_arms.config_for_task("lora", ("ASSAY_A",), 0)
+    """The two ways of naming one configuration must not disagree.
+
+    Parametrized across the checkpoint boundary since issue #34. With one assay
+    the grid is 108 configurations per size, so task 0 is 650M and task 108 is
+    35M, and a single-task version of this test would have covered whichever
+    size happened to sort first while the other silently disagreed.
+    """
+    config = run_arms.config_for_task("lora", ("ASSAY_A",), task_id)
     run_main(
         monkeypatch,
         tmp_path,
@@ -735,12 +805,49 @@ def test_explicit_axes_select_the_same_configuration_as_the_task_id(
             str(config.n),
             "--seed",
             str(config.seed),
+            "--checkpoint",
+            config.checkpoint,
         ],
     )
 
     shards = list(run_arms.shard_dir(tmp_path / "results", "lora").glob("*.csv"))
 
     assert [path.name for path in shards] == [run_arms.shard_name(config)]
+
+
+def test_naming_a_configuration_by_hand_requires_its_checkpoint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A default here would silently pick an encoder the task id would not.
+
+    `--checkpoint` carried `LADDER_CHECKPOINT` as its default while the ladder
+    ran at one size, which was harmless. With two sizes it means reproducing a
+    failing array task by hand, which slurm/README.md tells you to do, quietly
+    runs a different model and reports a plausible number for the wrong arm.
+    Failing loudly is the whole point, so this drives the guard rather than
+    inspecting the parser.
+    """
+    config = run_arms.config_for_task("lora", ("ASSAY_A",), 0)
+
+    with pytest.raises(AssertionError, match="--checkpoint is required"):
+        run_main(
+            monkeypatch,
+            tmp_path,
+            [
+                "--rung",
+                "lora",
+                "--assay",
+                config.assay,
+                "--scheme",
+                config.scheme,
+                "--readout",
+                config.readout,
+                "--n",
+                str(config.n),
+                "--seed",
+                str(config.seed),
+            ],
+        )
 
 
 def test_task_zero_does_not_slip_past_the_mode_guard(
@@ -795,6 +902,9 @@ def test_a_supervised_rung_rejects_a_zero_training_size(
                 "0",
                 "--seed",
                 "0",
+                # As above: reach the --n assertion rather than the checkpoint one.
+                "--checkpoint",
+                run_arms.LADDER_CHECKPOINT,
             ],
         )
 

@@ -79,15 +79,39 @@ from biotp.training import (
 from biotp.utils import set_seed
 from biotp.zero_shot import masked_marginal_scores
 
-# The checkpoint every rung shares. If rung 3 ran at a different size because a
-# GPU made it affordable, the rung 2 to rung 3 delta would conflate adaptation
-# with model scale and the headline would be uninterpretable.
+# The sizes the supervised ladder runs at. Both rungs iterate this same tuple,
+# which is what keeps the rung 2 to rung 3 delta interpretable: the two rungs
+# are always compared at equal size, and the ladder is run once per size rather
+# than one rung being moved to a bigger encoder because a GPU made it
+# affordable. Adding a size here adds it to both rungs by construction; there is
+# no way to give one rung an encoder the other does not have.
+#
+# 650M answers the standing objection to a 35M-only result, that adaptation had
+# too little capacity to show up. See issue #34.
+#
+# **The order is the run order, and it is deliberate.** Checkpoint is the
+# outermost axis in `grid`, so this tuple decides which half of the SLURM array
+# gets the low task indices, and SLURM dispatches an array in ascending index
+# order. 650M is first because it is the deliverable: 35M is already published,
+# and re-running it is a reproduction check worth having but not worth waiting
+# for. An array that is cancelled, preempted or runs out of allocation half way
+# therefore leaves the result we came for, rather than a complete copy of the
+# result we already had.
+SUPERVISED_CHECKPOINTS = ("esm2_t33_650M_UR50D", "esm2_t12_35M_UR50D")
+
+# The size the ridge reference runs at, and the default for the manual
+# single-configuration path. Spelled out rather than indexed off
+# SUPERVISED_CHECKPOINTS: `frozen_reference.py` reads this, and reordering that
+# tuple for scheduling reasons must not silently move the ridge floor to a
+# different encoder. Not a claim about which size the ladder "really" runs at;
+# that is SUPERVISED_CHECKPOINTS, all of it.
 LADDER_CHECKPOINT = "esm2_t12_35M_UR50D"
 
-# Rung 1 additionally runs at 650M. It costs one forward pass per distinct
+# Rung 1 runs at every size the supervised rungs do, so each supervised result
+# has a zero-shot floor at its own scale. It costs one forward pass per distinct
 # mutated position, so it is nearly free at any size, and reporting both answers
 # the objection that a weak prior flattered the supervised rungs.
-ZERO_SHOT_CHECKPOINTS = ("esm2_t12_35M_UR50D", "esm2_t33_650M_UR50D")
+ZERO_SHOT_CHECKPOINTS = SUPERVISED_CHECKPOINTS
 
 SCHEMES = ("fold_random_5", "fold_modulo_5", "fold_contiguous_5")
 
@@ -523,14 +547,18 @@ def grid(rung: str, assays: tuple[str, ...]) -> Iterator[Config]:
                     )
         return
 
-    for assay_id in assays:
-        for scheme in SCHEMES:
-            for readout in LORA_READOUTS:
-                for n in TRAINING_SIZES:
-                    for seed in SEEDS:
-                        yield Config(
-                            rung, assay_id, scheme, readout, n, seed, LADDER_CHECKPOINT
-                        )
+    # Checkpoint is the outermost supervised axis, so both supervised rungs walk
+    # the same sizes in the same order and a rung 2 row always has a rung 3 row
+    # at its own size to be compared against.
+    for checkpoint in SUPERVISED_CHECKPOINTS:
+        for assay_id in assays:
+            for scheme in SCHEMES:
+                for readout in LORA_READOUTS:
+                    for n in TRAINING_SIZES:
+                        for seed in SEEDS:
+                            yield Config(
+                                rung, assay_id, scheme, readout, n, seed, checkpoint
+                            )
 
 
 def grid_size(rung: str, assays: tuple[str, ...]) -> int:
@@ -688,6 +716,11 @@ def configuration_records(rung: str) -> dict[str, Any]:
             "batch_size": SUPERVISED_BATCH_SIZE,
             "learning_rate": SUPERVISED_LEARNING_RATE,
             "max_epochs": MAX_EPOCHS,
+            # Recorded for the same reason as the optimiser settings: the two
+            # rungs are comparable only while these agree, and a manifest that
+            # did not say which sizes the grid covered would leave a reader
+            # unable to tell a 35M-only run from a full one.
+            "checkpoints": list(SUPERVISED_CHECKPOINTS),
         }
     if rung != "lora":
         return records
@@ -724,7 +757,8 @@ def main() -> int:
     parser.add_argument("--readout", choices=list(LORA_READOUTS))
     parser.add_argument("--n", type=int)
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--checkpoint", default=LADDER_CHECKPOINT)
+    # No default: see the required-axes check in the manual branch below.
+    parser.add_argument("--checkpoint", choices=list(SUPERVISED_CHECKPOINTS))
     parser.add_argument("--data-root", type=Path, default=Path("data"))
     parser.add_argument(
         "--results-dir", type=Path, default=Path("projects/dms-benchmark/results")
@@ -812,7 +846,12 @@ def main() -> int:
         elif args.all:
             configs = list(grid(args.rung, assays))
         else:
-            for name in ("assay", "scheme", "seed"):
+            # `checkpoint` is in this list rather than carrying a default since
+            # issue #34. The ladder runs at two sizes now, so a default meant
+            # naming a configuration by hand and silently getting a different
+            # encoder from the one the same axes reach through --task-id. The
+            # README sends you down exactly that path when debugging a task.
+            for name in ("assay", "scheme", "seed", "checkpoint"):
                 assert getattr(args, name) is not None, (
                     f"--{name} is required without --all, so an array task maps "
                     "onto exactly one configuration"
