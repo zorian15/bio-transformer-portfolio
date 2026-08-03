@@ -148,6 +148,14 @@ and not a stopping rule. Removing that difference cut the measured delta by abou
 a quarter. See issue #33 and the 2026-08-02 entries in the
 [experiment log](decision-log.md).
 
+Passing identical optimiser settings at each call site was itself only a
+coincidence one layer down: `train` and `train_lora` each built their own
+`torch.optim.Adam`, so a hyperparameter such as `weight_decay` added to either
+trainer alone would have moved the rung 2 to rung 3 delta with every test still
+passing. Both rungs now construct their optimiser through one private
+`_build_optimizer`, so a setting added there reaches both rungs or neither, and
+the property is structural rather than merely tested. See issue #37.
+
 **What still differs, stated plainly.** Rung 2 reads cached embeddings while
 rung 3 re-encodes every step, which is inherent to adapting the encoder and
 cannot be removed. And the rung-2 head carries no explicit weight decay, only
